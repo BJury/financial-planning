@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <!-- Maskable variant: full-bleed background, safe zone content (SPEC.md §15 placeholder). -->
+  <rect width="192" height="192" fill="#1c7ed6" />
+  <text x="96" y="115" font-family="system-ui, sans-serif" font-size="72" font-weight="700" fill="#ffffff" text-anchor="middle">£</text>
+</svg>

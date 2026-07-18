@@ -3,6 +3,7 @@ import js from "@eslint/js";
 import tseslint from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
 import importPlugin from "eslint-plugin-import";
+import globals from "globals";
 
 export default [
   {
@@ -39,6 +40,14 @@ export default [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+      // `onChange={(v) => setSomething(v)}` (a void-returning setter call
+      // as an arrow-function-shorthand body) is idiomatic, unambiguous
+      // React — only flag the genuinely confusing cases (a void
+      // expression inside a larger expression), not this one.
+      "@typescript-eslint/no-confusing-void-expression": [
+        "error",
+        { ignoreArrowShorthand: true },
+      ],
       // Architectural rule: the engine must stay pure and framework-agnostic.
       // apps/web may import packages/engine; the reverse must never happen.
       "no-restricted-imports": [
@@ -56,10 +65,19 @@ export default [
     },
   },
   {
+    // packages/engine must stay platform-agnostic (SPEC.md §9.1) — no
+    // browser or Node globals assumed available here.
     files: ["packages/engine/**/*.ts"],
-    rules: {
-      // Enforced separately per-package below via a dedicated override,
-      // since flat config's `files` glob is relative to this file.
+    languageOptions: {
+      globals: {},
+    },
+  },
+  {
+    // apps/web is a browser-only static site (SPEC.md §9.1) — no Node
+    // globals, only the browser platform.
+    files: ["apps/web/**/*.ts", "apps/web/**/*.tsx"],
+    languageOptions: {
+      globals: globals.browser,
     },
   },
 ];
