@@ -41,6 +41,10 @@ export interface PreparedYearRules {
     readonly basicRate: number;
     readonly higherRate: number;
   };
+  readonly isa: {
+    /** Combined across every ISA type (cash/stocks & shares/LISA) a person holds — the LISA's own smaller sub-limit isn't separately enforced yet. */
+    readonly annualSubscriptionLimit: Pence;
+  };
 }
 
 /**
@@ -96,6 +100,9 @@ export function prepareRuleSetForScenario(
       annualExemptAmount: uprate(confirmedRuleSet.capitalGainsTax.annualExemptAmount),
       basicRate: confirmedRuleSet.capitalGainsTax.basicRate,
       higherRate: confirmedRuleSet.capitalGainsTax.higherRate,
+    },
+    isa: {
+      annualSubscriptionLimit: uprate(confirmedRuleSet.isa.annualSubscriptionLimit),
     },
   };
 }

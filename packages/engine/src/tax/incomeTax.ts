@@ -12,6 +12,38 @@ export interface IncomeTaxBand {
   readonly rate: number;
 }
 
+/** How much of one band a specific amount of taxable income actually used, and the tax it generated — the per-band detail behind a single `applyIncomeTaxBands` total (SPEC.md §4 journey 5's "Income Tax by band"). */
+export interface IncomeTaxBandBreakdown {
+  readonly name: string;
+  readonly rate: number;
+  readonly taxableAmount: Pence;
+  readonly tax: Pence;
+}
+
+/**
+ * The band-by-band detail behind `applyIncomeTaxBands` — every band is
+ * always present in the result (even at £0), so a UI can render a
+ * consistent set of rows regardless of how much of the stack a given
+ * income actually reaches (SPEC.md §4 journey 5). Kept as the single
+ * source of truth for the band-stacking arithmetic; `applyIncomeTaxBands`
+ * is just this summed, so the two can never drift apart (§9.3).
+ */
+export function breakdownIncomeTaxByBand(taxableIncome: Pence, bands: readonly IncomeTaxBand[]): readonly IncomeTaxBandBreakdown[] {
+  let bandFloor = zeroPence();
+
+  return bands.map((band) => {
+    const bandCeiling = band.upTo === null ? taxableIncome : minPence(band.upTo, taxableIncome);
+    const taxableAmount = maxPence(subtractPence(bandCeiling, bandFloor), zeroPence());
+    const tax = multiplyPenceByRate(taxableAmount, band.rate);
+
+    if (band.upTo !== null) {
+      bandFloor = band.upTo;
+    }
+
+    return { name: band.name, rate: band.rate, taxableAmount, tax };
+  });
+}
+
 /**
  * Applies a stack of marginal-rate bands to taxable income and returns
  * the tax due (SPEC.md §5.2, §9.3).
@@ -25,28 +57,7 @@ export interface IncomeTaxBand {
  * set of edge cases to test (§9.3).
  */
 export function applyIncomeTaxBands(taxableIncome: Pence, bands: readonly IncomeTaxBand[]): Pence {
-  let tax = zeroPence();
-  let bandFloor = zeroPence();
-
-  for (const band of bands) {
-    if (taxableIncome <= bandFloor) {
-      break;
-    }
-
-    const bandCeiling = band.upTo === null ? taxableIncome : minPence(band.upTo, taxableIncome);
-    const amountInBand = subtractPence(bandCeiling, bandFloor);
-
-    if (amountInBand > 0) {
-      tax = addPence(tax, multiplyPenceByRate(amountInBand, band.rate));
-    }
-
-    if (band.upTo === null) {
-      break;
-    }
-    bandFloor = band.upTo;
-  }
-
-  return tax;
+  return breakdownIncomeTaxByBand(taxableIncome, bands).reduce((total, b) => addPence(total, b.tax), zeroPence());
 }
 
 /**

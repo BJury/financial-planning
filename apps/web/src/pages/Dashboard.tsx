@@ -1,21 +1,12 @@
-import { ageAtYear, getLatestConfirmedRuleSet, penceToPounds, runProjection, sumPence, type Pence, type Scenario } from "@fp/engine";
+import { penceToPounds, sumPence } from "@fp/engine";
 import { Alert, Button, Group, Stack, Table, Title } from "@mantine/core";
 import { useMemo } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { PlanFileControls } from "../components/PlanFileControls.js";
+import { formatMoney } from "../format.js";
+import { computeProjection } from "../projection.js";
 import { useScenarioStore } from "../state/store.js";
-
-/**
- * The projection runs to the latest of any household member's own
- * `projectionEndAge` (SPEC.md §3.2) — not a fixed short window — since a
- * scheduled item (a rental starting in 5 years and running for 10, say)
- * can easily fall entirely outside a hardcoded few-year horizon.
- */
-function projectionYearsFor(scenario: Scenario, startCalendarYear: number): number {
-  const yearsPerPerson = scenario.household.people.map((p) => p.projectionEndAge - ageAtYear(p.dateOfBirth, startCalendarYear));
-  return Math.max(1, ...yearsPerPerson);
-}
 
 /**
  * Phase 1's dashboard (SPEC.md §4 journey 2, §7): a minimal net-worth
@@ -26,12 +17,7 @@ export function Dashboard() {
   const scenario = useScenarioStore((s) => s.scenario);
   const navigate = useNavigate();
 
-  const result = useMemo(() => {
-    if (!scenario) return null;
-    const confirmedRuleSet = getLatestConfirmedRuleSet();
-    const startCalendarYear = new Date(confirmedRuleSet.effectiveFrom).getUTCFullYear();
-    return runProjection(scenario, confirmedRuleSet, projectionYearsFor(scenario, startCalendarYear));
-  }, [scenario]);
+  const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
 
   if (!scenario) {
     return <Navigate to="/" replace />;
@@ -48,6 +34,9 @@ export function Dashboard() {
         <Title order={2}>Your projection</Title>
         <Group gap="xs">
           <PlanFileControls />
+          <Button variant="subtle" onClick={() => void navigate("/tax-breakdown")}>
+            Tax breakdown
+          </Button>
           <Button variant="subtle" onClick={() => void navigate("/")}>
             Edit plan
           </Button>
@@ -112,9 +101,4 @@ export function Dashboard() {
       </Table>
     </Stack>
   );
-}
-
-function formatMoney(amount: Pence | undefined): string {
-  if (amount === undefined) return "—";
-  return `£${penceToPounds(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }

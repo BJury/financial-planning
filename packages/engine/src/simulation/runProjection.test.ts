@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { pence, poundsToPence } from "../money/pence.js";
-import { personId, type Household, type Person, type Scenario } from "../schema/types.js";
+import { pence, poundsToPence, subtractPence, sumPence, zeroPence } from "../money/pence.js";
+import { personId, type Account, type Household, type IncomeDrainInstance, type Person, type Scenario } from "../schema/types.js";
 import { ruleSet2026_27 } from "../taxYearData/2026-27.js";
 import { runProjection, totalTaxForYear } from "./runProjection.js";
 
@@ -110,6 +110,23 @@ describe("runProjection — golden-file scenario: £70,000 salary + relief-at-so
     expect(personResult?.netIncome).toBe(poundsToPence(52157.4));
   });
 
+  it("breaks down year 0's Income Tax band-by-band, exactly matching the hand-verified total above", () => {
+    const result = runProjection(makeGoldenScenario(), ruleSet2026_27, 1);
+    const personResult = result.rows[0]?.perPerson[0];
+    expect(personResult).toBeDefined();
+    if (!personResult) throw new Error("expected a person result");
+
+    expect(personResult.incomeTaxByBand.map((b) => b.name)).toEqual(["personalAllowance", "basic", "higher", "additional"]);
+    expect(personResult.incomeTaxByBand.find((b) => b.name === "personalAllowance")).toMatchObject({ taxableAmount: poundsToPence(12570), tax: 0 });
+    expect(personResult.incomeTaxByBand.find((b) => b.name === "basic")).toMatchObject({ taxableAmount: poundsToPence(42700), tax: poundsToPence(8540) });
+    expect(personResult.incomeTaxByBand.find((b) => b.name === "higher")).toMatchObject({ taxableAmount: poundsToPence(14730), tax: poundsToPence(5892) });
+    expect(personResult.incomeTaxByBand.find((b) => b.name === "additional")).toMatchObject({ taxableAmount: 0, tax: 0 });
+
+    // Always exactly consistent with the scalar total (SPEC.md §4 journey 5) — never computed separately.
+    const summed = personResult.incomeTaxByBand.reduce((total, b) => pence(total + b.tax), pence(0));
+    expect(summed).toBe(personResult.incomeTax);
+  });
+
   it("credits the grossed-up pension contribution and grows the pension balance net of charges", () => {
     const result = runProjection(makeGoldenScenario(), ruleSet2026_27, 1);
     const year0 = result.rows[0];
@@ -118,11 +135,18 @@ describe("runProjection — golden-file scenario: £70,000 salary + relief-at-so
     expect(year0?.accountBalances.get("pension1")).toBe(poundsToPence(15375));
   });
 
-  it("credits the ISA contribution and grows the ISA balance", () => {
+  it("credits the ISA contribution, plus the surplus cash sweep, and grows the ISA balance", () => {
     const result = runProjection(makeGoldenScenario(), ruleSet2026_27, 1);
     const year0 = result.rows[0];
-    // £2,000 start + £5,000 contribution = £7,000, grown at 4% = £7,280.00
-    expect(year0?.accountBalances.get("isa1")).toBe(poundsToPence(7280));
+    // £2,000 start + £5,000 contribution = £7,000. Net income (£52,157.40,
+    // see the Income Tax test above) has nowhere else to go in this
+    // scenario (no living expenses drain), so the surplus cash sweep
+    // invests as much of it as fits in the remaining ISA subscription
+    // room (£20,000 limit - £5,000 already contributed = £15,000) —
+    // £7,000 + £15,000 = £22,000, grown at 4% = £22,880.00. The
+    // remaining £37,157.40 of surplus has nowhere to go (no GIA in this
+    // scenario) and stays unswept, per the sweep's documented v1 scope.
+    expect(year0?.accountBalances.get("isa1")).toBe(poundsToPence(22880));
   });
 
   it("produces identical Income Tax and NI every year when salary and thresholds are both flat in real terms", () => {
@@ -482,7 +506,18 @@ function makeDrawdownScenario(options: {
         },
       },
     ],
-    incomeDrains: [],
+    // A living expenses drain matching the target: this is drawdown
+    // income specifically to live on, and it's spent, not surplus — so
+    // the surplus cash sweep has nothing left to invest, keeping these
+    // tests focused on drawdown mechanics rather than the sweep.
+    incomeDrains: [
+      {
+        id: "expenses1",
+        type: "livingExpenses",
+        owner: PERSON_ID,
+        config: { annualAmount: poundsToPence(options.targetNetAnnualIncome) },
+      },
+    ],
     inflationRate: 0.025,
     upratingPolicy: { kind: "inflationLinked" },
   };
@@ -497,8 +532,8 @@ describe("runProjection — drawdown target", () => {
     expect(personResult?.drawdownNetAchieved).toBe(poundsToPence(10000));
     expect(personResult?.drawdownIncomeTax).toBe(0);
     expect(personResult?.drawdownShortfall).toBe(false);
-    // Net income is entirely the drawdown — there's no earned income for a retired person.
-    expect(personResult?.netIncome).toBe(poundsToPence(10000));
+    // The drawdown is entirely spent on the matching living expenses drain (see makeDrawdownScenario) — nothing left over to sweep.
+    expect(personResult?.netIncome).toBe(0);
     // £500,000 - £10,000 gross withdrawn, no growth.
     expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(490000));
     // The ISA is untouched — pension income within the Personal Allowance is preferred (SPEC.md §5.7.3).
@@ -511,7 +546,8 @@ describe("runProjection — drawdown target", () => {
     const personResult = result.rows[0]?.perPerson[0];
 
     expect(personResult?.drawdownNetAchieved).toBe(0);
-    expect(personResult?.netIncome).toBe(0);
+    // The living expenses drain (see makeDrawdownScenario) still applies even before the drawdown itself starts — a £10,000 deficit, funded from outside this minimal scenario.
+    expect(personResult?.netIncome).toBe(subtractPence(zeroPence(), poundsToPence(10000)));
     expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(500000));
     expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(5000));
   });
@@ -537,6 +573,26 @@ describe("runProjection — drawdown target", () => {
     expect(Math.abs((personResult?.drawdownNetAchieved ?? 0) - poundsToPence(50000))).toBeLessThanOrEqual(5);
     if (!row) throw new Error("expected a row");
     expect(totalTaxForYear(row)).toBe(personResult?.drawdownIncomeTax);
+  });
+
+  it("exposes a bucket-by-bucket breakdown of the drawdown that's exactly consistent with the scalar totals", () => {
+    const scenario = makeDrawdownScenario({ targetNetAnnualIncome: 50000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const personResult = result.rows[0]?.perPerson[0];
+    expect(personResult).toBeDefined();
+    if (!personResult) throw new Error("expected a person result");
+
+    expect(personResult.drawdownBuckets.length).toBeGreaterThan(0);
+    // Every bucket is one of the two known tax-free ones or a taxable pension-income one (no GIA/CGT in this scenario).
+    for (const bucket of personResult.drawdownBuckets) {
+      expect(["taxFreeISA", "taxFreePensionLumpSum", "taxablePersonalAllowance", "taxableBasicRate", "taxableHigherRate", "taxableAdditionalRate"]).toContain(
+        bucket.bucket,
+      );
+    }
+    const taxFromBuckets = sumPence(personResult.drawdownBuckets.map((b) => b.taxCost));
+    expect(taxFromBuckets).toBe(personResult.drawdownIncomeTax);
+    const netFromBuckets = sumPence(personResult.drawdownBuckets.map((b) => pence(b.amount - b.taxCost)));
+    expect(Math.abs(netFromBuckets - personResult.drawdownNetAchieved)).toBeLessThanOrEqual(2);
   });
 
   it("tracks the Lump Sum Allowance across years, cumulatively, so the same withdrawal gets costlier once it's exhausted", () => {
@@ -587,7 +643,17 @@ describe("runProjection — drawdown draws from GIA and cash once pension/ISA ar
           },
         },
       ],
-      incomeDrains: [],
+      // Matches the target, same as makeDrawdownScenario above — keeps
+      // these tests focused on drawdown-across-account-types mechanics
+      // rather than the surplus cash sweep.
+      incomeDrains: [
+        {
+          id: "expenses1",
+          type: "livingExpenses",
+          owner: PERSON_ID,
+          config: { annualAmount: poundsToPence(targetNetAnnualIncome) },
+        },
+      ],
       inflationRate: 0.025,
       upratingPolicy: { kind: "inflationLinked" },
     };
@@ -734,7 +800,18 @@ describe("runProjection — GIA and cash accounts", () => {
       incomeSources: [
         { id: "src1", type: "salary", owner: PERSON_ID, config: { grossAnnualSalary: poundsToPence(60000), annualGrowthRate: 0 } },
       ],
-      incomeDrains: [],
+      // Deliberately large enough to absorb all net income — keeps these
+      // tests focused on savings/dividend tax mechanics, not the surplus
+      // cash sweep (there's no ISA here, so unswept surplus would
+      // otherwise all land in the GIA and change its expected balance).
+      incomeDrains: [
+        {
+          id: "expenses1",
+          type: "livingExpenses",
+          owner: PERSON_ID,
+          config: { annualAmount: poundsToPence(200000) },
+        },
+      ],
       inflationRate: 0.025,
       upratingPolicy: { kind: "inflationLinked" },
     };
@@ -781,7 +858,12 @@ describe("runProjection — GIA and cash accounts", () => {
     if (!personResult) throw new Error("expected a person result");
 
     const expectedNetIncome =
-      poundsToPence(60000) - personResult.incomeTax - personResult.nationalInsurance - personResult.savingsTax - personResult.dividendTax;
+      poundsToPence(60000) -
+      personResult.incomeTax -
+      personResult.nationalInsurance -
+      personResult.savingsTax -
+      personResult.dividendTax -
+      poundsToPence(200000); // the living expenses drain, see makeInvestmentScenario
     expect(personResult.netIncome).toBe(expectedNetIncome);
   });
 
@@ -820,5 +902,130 @@ describe("runProjection — GIA and cash accounts", () => {
     expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(15000));
     // Cost basis increases by the same amount — it's new money invested, not a gain.
     expect(result.rows[0]?.costBasisByAccountId.get("gia1")).toBe(poundsToPence(15000));
+  });
+});
+
+describe("runProjection — surplus cash sweep", () => {
+  function makeSweepScenario(options: {
+    readonly grossAnnualSalary: number; // pounds
+    readonly hasIsa?: boolean;
+    readonly hasGia?: boolean;
+    readonly isaContribution?: number; // pounds — an existing manual contribution, ahead of the sweep
+    readonly livingExpenses?: number; // pounds
+  }): Scenario {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
+    const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
+
+    const accounts: Account[] = [];
+    if (options.hasIsa) {
+      accounts.push({ kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: zeroPence(), annualGrowthRate: 0 });
+    }
+    if (options.hasGia) {
+      accounts.push({ kind: "gia", id: "gia1", owner: PERSON_ID, currentBalance: zeroPence(), costBasis: zeroPence(), annualGrowthRate: 0, annualDividendYield: 0 });
+    }
+
+    const incomeDrains: IncomeDrainInstance[] = [];
+    if (options.isaContribution !== undefined) {
+      incomeDrains.push({
+        id: "isacontrib1",
+        type: "isaContribution",
+        owner: PERSON_ID,
+        config: { isaAccountId: "isa1", annualContribution: poundsToPence(options.isaContribution) },
+      });
+    }
+    if (options.livingExpenses !== undefined) {
+      incomeDrains.push({
+        id: "expenses1",
+        type: "livingExpenses",
+        owner: PERSON_ID,
+        config: { annualAmount: poundsToPence(options.livingExpenses) },
+      });
+    }
+
+    return {
+      schemaVersion: 1,
+      household,
+      accounts,
+      incomeSources: [
+        { id: "src1", type: "salary", owner: PERSON_ID, config: { grossAnnualSalary: poundsToPence(options.grossAnnualSalary), annualGrowthRate: 0 } },
+      ],
+      incomeDrains,
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+  }
+
+  it("sweeps net income entirely into the ISA when it fits within the remaining annual subscription limit", () => {
+    const scenario = makeSweepScenario({ grossAnnualSalary: 22000, hasIsa: true });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const row = result.rows[0];
+    const personResult = row?.perPerson[0];
+
+    expect(personResult?.netIncome).toBeGreaterThan(0);
+    expect(personResult?.netIncome).toBeLessThan(poundsToPence(20000)); // comfortably under the ISA limit
+    expect(personResult?.surplusSweptToIsa).toBe(personResult?.netIncome);
+    expect(personResult?.surplusSweptToGia).toBe(0);
+    expect(row?.accountBalances.get("isa1")).toBe(personResult?.netIncome);
+  });
+
+  it("caps the ISA sweep at the remaining annual subscription limit and spills the rest into the GIA", () => {
+    const scenario = makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true, hasGia: true });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const row = result.rows[0];
+    const personResult = row?.perPerson[0];
+
+    const isaLimit = poundsToPence(ruleSet2026_27.isa.annualSubscriptionLimit);
+    expect(personResult?.netIncome).toBeGreaterThan(isaLimit);
+    expect(personResult?.surplusSweptToIsa).toBe(isaLimit);
+    expect(personResult?.surplusSweptToGia).toBe(pence((personResult?.netIncome ?? 0) - isaLimit));
+    expect(row?.accountBalances.get("isa1")).toBe(isaLimit);
+    expect(row?.accountBalances.get("gia1")).toBe(personResult?.surplusSweptToGia);
+  });
+
+  it("accounts for an existing manual ISA contribution when computing the remaining sweep room", () => {
+    const isaLimit = ruleSet2026_27.isa.annualSubscriptionLimit;
+    const manualContribution = 15000;
+    const scenario = makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true, hasGia: true, isaContribution: manualContribution });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const personResult = result.rows[0]?.perPerson[0];
+
+    // Only the remaining £5,000 of ISA room (£20,000 - £15,000 already contributed) is available to the sweep.
+    expect(personResult?.surplusSweptToIsa).toBe(poundsToPence(isaLimit - manualContribution));
+  });
+
+  it("sweeps entirely into the GIA (with cost basis increasing too) when there's no ISA account", () => {
+    const scenario = makeSweepScenario({ grossAnnualSalary: 30000, hasGia: true });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const row = result.rows[0];
+    const personResult = row?.perPerson[0];
+
+    expect(personResult?.netIncome).toBeGreaterThan(0);
+    expect(personResult?.surplusSweptToIsa).toBe(0);
+    expect(personResult?.surplusSweptToGia).toBe(personResult?.netIncome);
+    expect(row?.accountBalances.get("gia1")).toBe(personResult?.netIncome);
+    expect(row?.costBasisByAccountId.get("gia1")).toBe(personResult?.netIncome);
+  });
+
+  it("doesn't sweep anywhere when the person holds neither an ISA nor a GIA", () => {
+    const scenario = makeSweepScenario({ grossAnnualSalary: 30000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const personResult = result.rows[0]?.perPerson[0];
+
+    expect(personResult?.netIncome).toBeGreaterThan(0);
+    expect(personResult?.surplusSweptToIsa).toBe(0);
+    expect(personResult?.surplusSweptToGia).toBe(0);
+  });
+
+  it("doesn't sweep a zero or negative net income", () => {
+    const scenario = makeSweepScenario({ grossAnnualSalary: 30000, hasIsa: true, hasGia: true, livingExpenses: 100000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const row = result.rows[0];
+    const personResult = row?.perPerson[0];
+
+    expect(personResult?.netIncome).toBeLessThan(0);
+    expect(personResult?.surplusSweptToIsa).toBe(0);
+    expect(personResult?.surplusSweptToGia).toBe(0);
+    expect(row?.accountBalances.get("isa1")).toBe(0);
+    expect(row?.accountBalances.get("gia1")).toBe(0);
   });
 });

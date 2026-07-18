@@ -3,6 +3,7 @@ import { pence, poundsToPence } from "../money/pence.js";
 import { ruleSet2026_27 } from "../taxYearData/2026-27.js";
 import {
   applyIncomeTaxBands,
+  breakdownIncomeTaxByBand,
   buildFullBandStack,
   computeRemainingBandHeadroom,
   taperPersonalAllowance,
@@ -144,5 +145,40 @@ describe("computeRemainingBandHeadroom", () => {
     expect(headroom.find((b) => b.name === "higher")?.remainingWidth).toBe(0);
     // The unbounded top band always reports null, regardless of how much other income there already is.
     expect(headroom.find((b) => b.name === "additional")?.remainingWidth).toBeNull();
+  });
+});
+
+describe("breakdownIncomeTaxByBand", () => {
+  const bands = buildFullBandStack(fullAllowance, standardBands);
+
+  it("always includes every band, even at £0, for a consistent set of UI rows", () => {
+    const breakdown = breakdownIncomeTaxByBand(poundsToPence(10000), bands);
+    expect(breakdown.map((b) => b.name)).toEqual(["personalAllowance", "basic", "higher", "additional"]);
+    expect(breakdown.find((b) => b.name === "basic")?.taxableAmount).toBe(0);
+    expect(breakdown.find((b) => b.name === "basic")?.tax).toBe(0);
+  });
+
+  it("splits a known HMRC-style example (£200,000) correctly across every band", () => {
+    const breakdown = breakdownIncomeTaxByBand(poundsToPence(200000), bands);
+    expect(breakdown.find((b) => b.name === "personalAllowance")).toMatchObject({ taxableAmount: fullAllowance, rate: 0, tax: 0 });
+    expect(breakdown.find((b) => b.name === "basic")).toMatchObject({ taxableAmount: poundsToPence(37700), rate: 0.2, tax: poundsToPence(37700 * 0.2) });
+    expect(breakdown.find((b) => b.name === "higher")).toMatchObject({ taxableAmount: poundsToPence(74870), rate: 0.4, tax: poundsToPence(74870 * 0.4) });
+    expect(breakdown.find((b) => b.name === "additional")).toMatchObject({ taxableAmount: poundsToPence(74860), rate: 0.45, tax: poundsToPence(74860 * 0.45) });
+  });
+
+  it("is always exactly consistent with applyIncomeTaxBands's own total, for any income level", () => {
+    for (const income of [poundsToPence(0), poundsToPence(12570), poundsToPence(45000), poundsToPence(50270), poundsToPence(300000)]) {
+      const breakdown = breakdownIncomeTaxByBand(income, bands);
+      const summed = breakdown.reduce((total, b) => pence(total + b.tax), pence(0));
+      expect(summed).toBe(applyIncomeTaxBands(income, bands));
+    }
+  });
+
+  it("returns zero tax and zero taxable amount for every band on zero income", () => {
+    const breakdown = breakdownIncomeTaxByBand(pence(0), bands);
+    for (const band of breakdown) {
+      expect(band.taxableAmount).toBe(0);
+      expect(band.tax).toBe(0);
+    }
   });
 });

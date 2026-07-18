@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router";
 import { loadSavedScenario, subscribeAutosave } from "./persistence/autosave.js";
 import { Dashboard } from "./pages/Dashboard.js";
 import { Onboarding } from "./pages/Onboarding.js";
+import { TaxBreakdown } from "./pages/TaxBreakdown.js";
 import { useScenarioStore } from "./state/store.js";
 
 export function App() {
@@ -32,6 +33,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<Onboarding />} />
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/tax-breakdown" element={<TaxBreakdown />} />
           </Routes>
         </BrowserRouter>
       ) : (

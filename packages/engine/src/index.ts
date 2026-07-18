@@ -38,6 +38,9 @@ export type {
 export { ageAtYear } from "./schema/age.js";
 export { CURRENT_SCHEMA_VERSION, migrateToLatest, SchemaMigrationError } from "./schema/migrations/index.js";
 
+// Tax (Income Tax band breakdown, SPEC.md §4 journey 5)
+export type { IncomeTaxBandBreakdown } from "./tax/incomeTax.js";
+
 // Real-terms conversion
 export { convertNominalToReal, convertRealToNominal } from "./realTerms/convertNominalToReal.js";
 export { uprateThreshold, type UpratingPolicy } from "./realTerms/uprateThreshold.js";
@@ -95,4 +98,4 @@ export type { BucketedResult, DrawdownBucket } from "./catalog/types.js";
 
 // Simulation
 export { runProjection, totalTaxForYear } from "./simulation/runProjection.js";
-export type { PersonYearResult, ProjectionResult, YearLedgerRow } from "./simulation/runProjection.js";
+export type { DrawdownBucketDetail, PersonYearResult, ProjectionResult, YearLedgerRow } from "./simulation/runProjection.js";
