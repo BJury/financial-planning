@@ -14,6 +14,8 @@ export interface PreparedYearRules {
   readonly personalAllowance: Pence;
   readonly personalAllowanceTaperThreshold: Pence;
   readonly personalAllowanceTaperRate: number;
+  /** The fixed amount transferable under Marriage Allowance (SPEC.md §5.2) — not dynamically 10% of anything at simulation time, just this year's published figure. */
+  readonly marriageAllowanceTransferableAmount: Pence;
   /** Standard rate bands only — the Personal Allowance is added separately via `buildFullBandStack`. */
   readonly incomeTaxBands: readonly IncomeTaxBand[];
   readonly nationalInsurance: NationalInsuranceThresholds;
@@ -45,6 +47,19 @@ export interface PreparedYearRules {
     /** Combined across every ISA type (cash/stocks & shares/LISA) a person holds — the LISA's own smaller sub-limit isn't separately enforced yet. */
     readonly annualSubscriptionLimit: Pence;
   };
+  readonly property: {
+    /** The flat Property Income Allowance a landlord may deduct instead of actual letting costs, whichever is larger (SPEC.md §5.6). */
+    readonly incomeAllowance: Pence;
+    readonly mortgageInterestReliefRate: number;
+    /**
+     * Kept separate from `capitalGainsTax.basicRate`/`higherRate` even
+     * though they happen to be equal for 2026/27 — they've historically
+     * diverged and could again (SPEC.md §5.6), so this engine never
+     * assumes they can be collapsed into one field.
+     */
+    readonly cgtResidentialBasicRate: number;
+    readonly cgtResidentialHigherRate: number;
+  };
 }
 
 /**
@@ -71,6 +86,7 @@ export function prepareRuleSetForScenario(
     personalAllowance: uprate(confirmedRuleSet.incomeTaxEngland.personalAllowance),
     personalAllowanceTaperThreshold: uprate(confirmedRuleSet.incomeTaxEngland.personalAllowanceTaperThreshold),
     personalAllowanceTaperRate: confirmedRuleSet.incomeTaxEngland.personalAllowanceTaperRate,
+    marriageAllowanceTransferableAmount: uprate(confirmedRuleSet.incomeTaxEngland.marriageAllowance.transferableAmount),
     incomeTaxBands,
     nationalInsurance: {
       primaryThreshold: uprate(confirmedRuleSet.nationalInsurance.primaryThreshold),
@@ -103,6 +119,12 @@ export function prepareRuleSetForScenario(
     },
     isa: {
       annualSubscriptionLimit: uprate(confirmedRuleSet.isa.annualSubscriptionLimit),
+    },
+    property: {
+      incomeAllowance: uprate(confirmedRuleSet.property.incomeAllowance),
+      mortgageInterestReliefRate: confirmedRuleSet.property.mortgageInterestReliefRate,
+      cgtResidentialBasicRate: confirmedRuleSet.property.cgtResidentialBasicRate,
+      cgtResidentialHigherRate: confirmedRuleSet.property.cgtResidentialHigherRate,
     },
   };
 }

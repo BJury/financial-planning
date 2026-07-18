@@ -53,9 +53,12 @@ describe("targetDrawdownIncomeDefinition.isActive", () => {
     expect(targetDrawdownIncomeDefinition.isActive(config, makeScenarioState([person]), yearContext(2030), PERSON_ID)).toBe(false);
   });
 
-  it("is never active for a jointly-owned instance in v1 (household-combined targets are Phase 5)", () => {
-    const active = targetDrawdownIncomeDefinition.isActive(baseConfig, makeScenarioState([person]), yearContext(2030), "joint");
-    expect(active).toBe(false);
+  it("gates a jointly-owned instance on the first household member's age (SPEC.md §5.7.4)", () => {
+    const youngerPartner: Person = { id: personId("p2"), dateOfBirth: "1990-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
+    const state = makeScenarioState([person, youngerPartner]);
+    // person (household.people[0]) turns 67 in 2027 — the younger partner's own age is irrelevant to this gate.
+    expect(targetDrawdownIncomeDefinition.isActive(baseConfig, state, yearContext(2026), "joint")).toBe(false);
+    expect(targetDrawdownIncomeDefinition.isActive(baseConfig, state, yearContext(2027), "joint")).toBe(true);
   });
 });
 
@@ -76,10 +79,9 @@ describe("targetDrawdownIncomeDefinition.validate", () => {
     expect(issues.some((i) => i.field === "targetNetAnnualIncome" && i.tier === "hardBlock")).toBe(true);
   });
 
-  it("soft-warns when neither a pension nor an ISA account is selected", () => {
+  it("has no issues with no account selected at all — a valid, auto-discovering joint target (SPEC.md §5.7.4)", () => {
     const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: poundsToPence(30000), startAge: 67 };
-    const issues = targetDrawdownIncomeDefinition.validate(config);
-    expect(issues.some((i) => i.tier === "softWarning")).toBe(true);
+    expect(targetDrawdownIncomeDefinition.validate(config)).toEqual([]);
   });
 
   it("hard-blocks an end age that isn't after the start age", () => {

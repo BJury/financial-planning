@@ -46,11 +46,21 @@ export interface Household {
   readonly relationshipStatus: "marriedOrCivilPartnership" | "unmarried" | null;
   /** SPEC.md §3.1 — irrelevant for a single-person household. */
   readonly targetIncomeMode: "combined" | "perPerson";
+  /**
+   * The id of the person electing to transfer 10% of their Personal
+   * Allowance to their spouse/civil partner (SPEC.md §5.2) — only
+   * meaningful when `relationshipStatus` is `"marriedOrCivilPartnership"`
+   * and the household has two people. A single scenario-level election
+   * (not a separate per-year toggle) that the engine checks for
+   * eligibility fresh each year — SPEC.md's "not always optimal to
+   * claim" concern is about the user's *intent* to elect, not about the
+   * engine silently deciding when to apply it; the engine still refuses
+   * to apply it in a year either person is ineligible.
+   */
+  readonly marriageAllowanceElection?: PersonId;
 }
 
 // --- Accounts -----------------------------------------------------------
-// Property is added in Phase 3 as a further sibling of this same
-// discriminated union, per SPEC.md §8's `Account` polymorphic type.
 
 interface AccountBase {
   readonly id: string;
@@ -125,7 +135,85 @@ export interface CashAccount extends AccountBase {
   // component: all of it is taxable interest income each year (SPEC.md §3.7, §5.5).
 }
 
-export type Account = PensionAccount | IsaAccount | GiaAccount | CashAccount;
+/**
+ * A mortgage is always secured against exactly one property, so it's not
+ * a standalone Account type — embedded directly in `Property` (SPEC.md
+ * §3.8, §8). Interest/capital are tracked separately (via
+ * `mortgage/amortizeMortgageYear.ts`) since a rental property's Income
+ * Tax calculation needs the interest portion specifically (§5.6).
+ *
+ * Tracked internally in **nominal** pounds throughout the simulation
+ * (`simulation/runProjection.ts`), unlike every other balance in this
+ * engine — a mortgage is a genuinely nominal, fixed-in-cash-terms
+ * contract (SPEC.md §5.8's fixed-rate-mortgage example), not a value the
+ * user thinks of in today's money the way an investment balance is. Both
+ * `initialBalance` and `annualPayment` are still entered/displayed in
+ * today's money like everything else, since at the scenario's start year
+ * nominal and real are numerically identical (no inflation has yet
+ * elapsed) — the distinction only matters once the simulation starts
+ * stepping forward, which `deflateNominalAmount` handles.
+ */
+export interface Mortgage {
+  readonly initialBalance: Pence;
+  /** Entered as a genuine nominal contract rate — never Fisher-converted (unlike every other growth rate in this engine, SPEC.md §3.10). */
+  readonly nominalInterestRate: number;
+  readonly repaymentType: "repayment" | "interestOnly";
+  /**
+   * Remaining term in whole years from the scenario's start (SPEC.md §3.8
+   * asks for months; simplified to whole years, matching this engine's
+   * whole-tax-year granularity everywhere else, e.g. `activeDateRange.ts`).
+   */
+  readonly termYears: number;
+  /**
+   * Fixed for the whole term (a real fixed-rate mortgage's actual monthly
+   * payment doesn't change), in nominal pounds at the scenario's start —
+   * derived from balance/rate/term via the standard amortisation formula
+   * in the UI, or entered directly. Simplification: no fixed-period-then-
+   * reversion-rate modelling, and no planned overpayments (SPEC.md §3.8
+   * lists both as optional refinements) — v1 models one flat rate for the
+   * whole term.
+   */
+  readonly annualPayment: Pence;
+}
+
+export interface RentalDetails {
+  /** Today's money at the scenario's start; compounds by `annualGrowthRate` (SPEC.md §5.8's "rental growth", distinct from the property's own house-price growth). */
+  readonly grossAnnualRentalIncome: Pence;
+  readonly lettingCosts: Pence;
+  readonly annualGrowthRate: number;
+}
+
+export interface PlannedSale {
+  /** ISO date — the tax year containing this date is when the sale is modelled (SPEC.md §3.8). */
+  readonly saleDate: string;
+  /** If omitted, the engine grows the property's current value to the sale date at its own house-price growth rate instead (SPEC.md §3.8). */
+  readonly expectedSalePrice?: Pence;
+  readonly sellingCosts: Pence;
+}
+
+export interface Property extends AccountBase {
+  readonly kind: "property";
+  /** A property can be jointly held (SPEC.md §3.8), unlike a pension or ISA. */
+  readonly owner: Owner;
+  readonly propertyType: "mainResidence" | "rental";
+  /**
+   * Current market value — named `currentBalance` (not `currentValue`)
+   * for consistency with every other `Account`'s field name, so
+   * `runProjection`'s generic balance-seeding/growth loop needs no
+   * Property-specific branch even though this is semantically a value,
+   * not a cash balance.
+   */
+  readonly currentBalance: Pence;
+  readonly purchasePrice: Pence;
+  /** ISO date — the CGT cost basis's acquisition date (SPEC.md §3.8). */
+  readonly purchaseDate: string;
+  /** Present only when `propertyType === "rental"` (SPEC.md §3.8). */
+  readonly rentalDetails?: RentalDetails;
+  readonly plannedSale?: PlannedSale;
+  readonly mortgage?: Mortgage;
+}
+
+export type Account = PensionAccount | IsaAccount | GiaAccount | CashAccount | Property;
 
 // --- Income Sources / Drains ---------------------------------------------
 

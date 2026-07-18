@@ -29,14 +29,19 @@ export type {
   IncomeDrainInstance,
   IncomeSourceInstance,
   IsaAccount,
+  Mortgage,
   Owner,
   PensionAccount,
   Person,
   PersonId,
+  PlannedSale,
+  Property,
+  RentalDetails,
   Scenario,
 } from "./schema/types.js";
 export { ageAtYear } from "./schema/age.js";
 export { CURRENT_SCHEMA_VERSION, migrateToLatest, SchemaMigrationError } from "./schema/migrations/index.js";
+export { splitByOwnership } from "./schema/jointOwnership.js";
 
 // Tax (Income Tax band breakdown, SPEC.md §4 journey 5)
 export type { IncomeTaxBandBreakdown } from "./tax/incomeTax.js";
@@ -45,6 +50,18 @@ export type { IncomeTaxBandBreakdown } from "./tax/incomeTax.js";
 export { convertNominalToReal, convertRealToNominal } from "./realTerms/convertNominalToReal.js";
 export { uprateThreshold, type UpratingPolicy } from "./realTerms/uprateThreshold.js";
 export { prepareRuleSetForScenario, type PreparedYearRules } from "./realTerms/prepareRuleSetForScenario.js";
+export { deflateNominalAmount } from "./realTerms/deflateNominalAmount.js";
+
+// Mortgage amortisation (SPEC.md §3.8)
+export { amortizeMortgageYear, deriveAnnualRepaymentMortgagePayment, type MortgageYearAmortization } from "./mortgage/amortizeMortgageYear.js";
+
+// Property/rental tax (SPEC.md §5.6)
+export { calculateMortgageInterestCredit, calculateRentalProfit } from "./tax/rentalIncomeTax.js";
+export { applyPrivateResidenceRelief } from "./tax/privateResidenceRelief.js";
+export { calculateCapitalGainsTax, type CapitalGainsRates } from "./tax/capitalGainsTax.js";
+
+// Marriage Allowance (SPEC.md §5.2)
+export { applyMarriageAllowanceTransfer, type MarriageAllowanceResult } from "./tax/marriageAllowance.js";
 
 // Tax-year data
 export { getLatestConfirmedRuleSet, getRuleSetForTaxYear, listAllRuleSets } from "./taxYearData/registry.js";
@@ -79,7 +96,7 @@ export type { PensionContributionConfig, PensionReliefMethod } from "./catalog/i
 import "./catalog/incomeDrains/pensionContribution.js";
 export type { IsaContributionConfig } from "./catalog/incomeDrains/isaContribution.js";
 import "./catalog/incomeDrains/isaContribution.js";
-export type { TargetDrawdownIncomeConfig } from "./catalog/incomeSources/targetDrawdownIncome.js";
+export type { HouseholdDrawdownSplitStrategy, TargetDrawdownIncomeConfig } from "./catalog/incomeSources/targetDrawdownIncome.js";
 import "./catalog/incomeSources/targetDrawdownIncome.js";
 export type { LivingExpensesConfig } from "./catalog/incomeDrains/livingExpenses.js";
 import "./catalog/incomeDrains/livingExpenses.js";
@@ -91,10 +108,24 @@ export type { GiaContributionConfig } from "./catalog/incomeDrains/giaContributi
 import "./catalog/incomeDrains/giaContribution.js";
 export type { CashContributionConfig } from "./catalog/incomeDrains/cashContribution.js";
 import "./catalog/incomeDrains/cashContribution.js";
+export type { RentalIncomeConfig } from "./catalog/incomeSources/rentalIncome.js";
+import "./catalog/incomeSources/rentalIncome.js";
+export type { MortgagePaymentConfig } from "./catalog/incomeDrains/mortgagePayment.js";
+import "./catalog/incomeDrains/mortgagePayment.js";
 
 // Drawdown solver (SPEC.md §5.7)
 export { solveDrawdown, type DrawdownSolverInputs, type DrawdownSolverResult } from "./drawdown/solveDrawdown.js";
 export type { BucketedResult, DrawdownBucket } from "./catalog/types.js";
+
+// Household drawdown optimisation (SPEC.md §5.7.4)
+export {
+  solveHouseholdDrawdown,
+  type HouseholdDrawdownPerson,
+  type HouseholdDrawdownPersonResult,
+  type HouseholdDrawdownPersonState,
+  type HouseholdDrawdownSolverResult,
+  type HouseholdDrawdownStrategy,
+} from "./drawdown/solveHouseholdDrawdown.js";
 
 // Simulation
 export { runProjection, totalTaxForYear } from "./simulation/runProjection.js";

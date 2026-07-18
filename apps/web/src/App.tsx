@@ -27,7 +27,7 @@ export function App() {
   }, [setScenario, setHasHydrated]);
 
   return (
-    <MantineProvider>
+    <MantineProvider defaultColorScheme="auto">
       {hasHydrated ? (
         <BrowserRouter>
           <Routes>

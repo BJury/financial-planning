@@ -1,4 +1,4 @@
-import { ageAtYear, getLatestConfirmedRuleSet, runProjection, type ProjectionResult, type Scenario } from "@fp/engine";
+import { ageAtYear, getLatestConfirmedRuleSet, runProjection, subtractPence, sumPence, type Pence, type ProjectionResult, type Scenario, type YearLedgerRow } from "@fp/engine";
 
 /**
  * The projection runs to the latest of any household member's own
@@ -21,4 +21,13 @@ export function computeProjection(scenario: Scenario): ProjectionResult {
   const confirmedRuleSet = getLatestConfirmedRuleSet();
   const startCalendarYear = new Date(confirmedRuleSet.effectiveFrom).getUTCFullYear();
   return runProjection(scenario, confirmedRuleSet, projectionYearsFor(scenario, startCalendarYear));
+}
+
+/**
+ * `accountBalances` holds each property's own market *value* — net worth
+ * (SPEC.md §7's "property equity net of mortgage") also needs to
+ * subtract whatever's still owed against it.
+ */
+export function computeNetWorth(row: YearLedgerRow): Pence {
+  return subtractPence(sumPence([...row.accountBalances.values()]), sumPence([...row.mortgageBalanceByPropertyId.values()]));
 }

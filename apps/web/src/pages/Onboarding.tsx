@@ -1,6 +1,7 @@
 import {
   convertNominalToReal,
   convertRealToNominal,
+  deriveAnnualRepaymentMortgagePayment,
   pence,
   penceToPounds,
   personId,
@@ -13,18 +14,23 @@ import {
   type IncomeDrainInstance,
   type IncomeSourceInstance,
   type IsaAccount,
+  type Owner,
   type PensionAccount,
+  type PersonId,
+  type Property,
   type Scenario,
 } from "@fp/engine";
-import { ActionIcon, Button, Card, Group, NumberInput, Stack, Text, TextInput, Title } from "@mantine/core";
+import { ActionIcon, Button, Card, Group, NumberInput, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
 import { CatalogPicker } from "../catalog-ui/CatalogPicker.js";
+import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
+const PERSON_B_ID = personId("partner");
 const DEFAULT_INFLATION_RATE = 0.025;
 const DEFAULT_TARGET_RETIREMENT_AGE = 67;
 
@@ -40,6 +46,8 @@ function generateId(prefix: string): string {
 
 interface PensionAccountDraft {
   readonly id: string;
+  /** Pensions can never be jointly held (SPEC.md §3.4) — always a specific person. */
+  readonly owner: PersonId;
   readonly currentBalance: number; // pounds — converted to Pence only when building the Scenario
   readonly annualGrowthRate: number; // real (SPEC.md §5.8) — see note on GrowthRateInput below
   readonly annualChargeRate: number;
@@ -48,12 +56,15 @@ interface PensionAccountDraft {
 
 interface IsaAccountDraft {
   readonly id: string;
+  /** ISAs can never be jointly held (SPEC.md §3.5) — always a specific person. */
+  readonly owner: PersonId;
   readonly currentBalance: number;
   readonly annualGrowthRate: number; // real
 }
 
 interface GiaAccountDraft {
   readonly id: string;
+  readonly owner: Owner;
   readonly currentBalance: number;
   readonly costBasis: number; // pounds — how much was originally paid in, for future CGT purposes
   readonly annualGrowthRate: number; // real, capital appreciation only
@@ -62,8 +73,36 @@ interface GiaAccountDraft {
 
 interface CashAccountDraft {
   readonly id: string;
+  readonly owner: Owner;
   readonly currentBalance: number;
   readonly annualGrowthRate: number; // real — this *is* the interest rate
+}
+
+interface PropertyAccountDraft {
+  readonly id: string;
+  readonly owner: Owner;
+  readonly propertyType: "mainResidence" | "rental";
+  readonly currentBalance: number; // pounds — current market value
+  readonly annualGrowthRate: number; // real — house price growth
+  readonly purchasePrice: number; // pounds
+  readonly purchaseDate: string; // ISO date
+  // Rental details — only used (and only submitted) when propertyType === "rental".
+  readonly grossAnnualRentalIncome: number;
+  readonly lettingCosts: number;
+  readonly rentalGrowthRate: number; // real
+  // Mortgage — optional.
+  readonly hasMortgage: boolean;
+  readonly mortgageInitialBalance: number;
+  /** Genuinely nominal (SPEC.md §5.8) — never converted to real, unlike every other rate on this page. */
+  readonly mortgageNominalInterestRate: number;
+  readonly mortgageRepaymentType: "repayment" | "interestOnly";
+  readonly mortgageTermYears: number;
+  readonly mortgageAnnualPayment: number; // pounds, nominal
+  // Planned sale — optional.
+  readonly hasPlannedSale: boolean;
+  readonly saleDate: string;
+  readonly expectedSalePrice: number; // pounds — 0 means "not set" (grow current value to the sale date instead)
+  readonly sellingCosts: number;
 }
 
 /**
@@ -105,10 +144,16 @@ function createDefaultConfig(fields: readonly CatalogFieldSchema<unknown>[]): Re
 interface OnboardingDrafts {
   readonly dateOfBirth: string;
   readonly inflationRate: number;
+  /** Whether the household has a second person (SPEC.md §3.1) — everything below is only meaningful when this is true. */
+  readonly hasSecondPerson: boolean;
+  readonly personBDateOfBirth: string;
+  readonly relationshipStatus: Household["relationshipStatus"];
+  readonly marriageAllowanceElection: PersonId | undefined;
   readonly pensionAccounts: readonly PensionAccountDraft[];
   readonly isaAccounts: readonly IsaAccountDraft[];
   readonly giaAccounts: readonly GiaAccountDraft[];
   readonly cashAccounts: readonly CashAccountDraft[];
+  readonly properties: readonly PropertyAccountDraft[];
   readonly incomeSources: readonly IncomeSourceInstance[];
   readonly incomeDrains: readonly IncomeDrainInstance[];
 }
@@ -126,24 +171,34 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
     return {
       dateOfBirth: "",
       inflationRate: DEFAULT_INFLATION_RATE,
+      hasSecondPerson: false,
+      personBDateOfBirth: "",
+      relationshipStatus: null,
+      marriageAllowanceElection: undefined,
       pensionAccounts: [],
       isaAccounts: [],
       giaAccounts: [],
       cashAccounts: [],
+      properties: [],
       incomeSources: [],
       incomeDrains: [],
     };
   }
 
-  const person = scenario.household.people[0];
+  const [personA, personB] = scenario.household.people;
 
   return {
-    dateOfBirth: person?.dateOfBirth ?? "",
+    dateOfBirth: personA?.dateOfBirth ?? "",
     inflationRate: scenario.inflationRate,
+    hasSecondPerson: personB !== undefined,
+    personBDateOfBirth: personB?.dateOfBirth ?? "",
+    relationshipStatus: scenario.household.relationshipStatus,
+    marriageAllowanceElection: scenario.household.marriageAllowanceElection,
     pensionAccounts: scenario.accounts
       .filter((a): a is PensionAccount => a.kind === "pension")
       .map((a) => ({
         id: a.id,
+        owner: a.owner,
         currentBalance: penceToPounds(a.currentBalance),
         annualGrowthRate: a.annualGrowthRate,
         annualChargeRate: a.annualChargeRate,
@@ -151,11 +206,12 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       })),
     isaAccounts: scenario.accounts
       .filter((a): a is IsaAccount => a.kind === "isa")
-      .map((a) => ({ id: a.id, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
+      .map((a) => ({ id: a.id, owner: a.owner, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
     giaAccounts: scenario.accounts
       .filter((a): a is GiaAccount => a.kind === "gia")
       .map((a) => ({
         id: a.id,
+        owner: a.owner,
         currentBalance: penceToPounds(a.currentBalance),
         costBasis: penceToPounds(a.costBasis),
         annualGrowthRate: a.annualGrowthRate,
@@ -163,7 +219,31 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       })),
     cashAccounts: scenario.accounts
       .filter((a): a is CashAccount => a.kind === "cash")
-      .map((a) => ({ id: a.id, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
+      .map((a) => ({ id: a.id, owner: a.owner, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
+    properties: scenario.accounts
+      .filter((a): a is Property => a.kind === "property")
+      .map((a) => ({
+        id: a.id,
+        owner: a.owner,
+        propertyType: a.propertyType,
+        currentBalance: penceToPounds(a.currentBalance),
+        annualGrowthRate: a.annualGrowthRate,
+        purchasePrice: penceToPounds(a.purchasePrice),
+        purchaseDate: a.purchaseDate,
+        grossAnnualRentalIncome: a.rentalDetails ? penceToPounds(a.rentalDetails.grossAnnualRentalIncome) : 0,
+        lettingCosts: a.rentalDetails ? penceToPounds(a.rentalDetails.lettingCosts) : 0,
+        rentalGrowthRate: a.rentalDetails?.annualGrowthRate ?? 0,
+        hasMortgage: a.mortgage !== undefined,
+        mortgageInitialBalance: a.mortgage ? penceToPounds(a.mortgage.initialBalance) : 0,
+        mortgageNominalInterestRate: a.mortgage?.nominalInterestRate ?? 0,
+        mortgageRepaymentType: a.mortgage?.repaymentType ?? "repayment",
+        mortgageTermYears: a.mortgage?.termYears ?? 25,
+        mortgageAnnualPayment: a.mortgage ? penceToPounds(a.mortgage.annualPayment) : 0,
+        hasPlannedSale: a.plannedSale !== undefined,
+        saleDate: a.plannedSale?.saleDate ?? "",
+        expectedSalePrice: a.plannedSale?.expectedSalePrice ? penceToPounds(a.plannedSale.expectedSalePrice) : 0,
+        sellingCosts: a.plannedSale ? penceToPounds(a.plannedSale.sellingCosts) : 0,
+      })),
     incomeSources: scenario.incomeSources,
     incomeDrains: scenario.incomeDrains,
   };
@@ -191,10 +271,15 @@ export function Onboarding() {
 
   const [dateOfBirth, setDateOfBirth] = useState(initial.dateOfBirth);
   const [inflationRate, setInflationRate] = useState(initial.inflationRate);
+  const [hasSecondPerson, setHasSecondPerson] = useState(initial.hasSecondPerson);
+  const [personBDateOfBirth, setPersonBDateOfBirth] = useState(initial.personBDateOfBirth);
+  const [relationshipStatus, setRelationshipStatus] = useState<Household["relationshipStatus"]>(initial.relationshipStatus);
+  const [marriageAllowanceElection, setMarriageAllowanceElection] = useState<PersonId | undefined>(initial.marriageAllowanceElection);
   const [pensionAccounts, setPensionAccounts] = useState<PensionAccountDraft[]>([...initial.pensionAccounts]);
   const [isaAccounts, setIsaAccounts] = useState<IsaAccountDraft[]>([...initial.isaAccounts]);
   const [giaAccounts, setGiaAccounts] = useState<GiaAccountDraft[]>([...initial.giaAccounts]);
   const [cashAccounts, setCashAccounts] = useState<CashAccountDraft[]>([...initial.cashAccounts]);
+  const [properties, setProperties] = useState<PropertyAccountDraft[]>([...initial.properties]);
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
 
@@ -214,19 +299,27 @@ export function Onboarding() {
     setIncomeDrains((prev) => [...prev, { id: generateId("drain"), type, owner: PERSON_ID, config }]);
   };
 
-  const canSubmit = dateOfBirth.length > 0;
+  const canSubmit = dateOfBirth.length > 0 && (!hasSecondPerson || personBDateOfBirth.length > 0);
 
   const handleSubmit = () => {
     const household: Household = {
-      people: [{ id: PERSON_ID, dateOfBirth, targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE, projectionEndAge: 95 }],
-      relationshipStatus: null,
+      people: [
+        { id: PERSON_ID, dateOfBirth, targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE, projectionEndAge: 95 },
+        ...(hasSecondPerson
+          ? [{ id: PERSON_B_ID, dateOfBirth: personBDateOfBirth, targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE, projectionEndAge: 95 }]
+          : []),
+      ],
+      relationshipStatus: hasSecondPerson ? relationshipStatus : null,
       targetIncomeMode: "perPerson",
+      ...(hasSecondPerson && relationshipStatus === "marriedOrCivilPartnership" && marriageAllowanceElection
+        ? { marriageAllowanceElection }
+        : {}),
     };
 
     const pensionAccountEntities: PensionAccount[] = pensionAccounts.map((a) => ({
       kind: "pension",
       id: a.id,
-      owner: PERSON_ID,
+      owner: a.owner,
       pensionType: "workplaceDC",
       currentBalance: poundsToPence(a.currentBalance),
       annualGrowthRate: a.annualGrowthRate,
@@ -237,7 +330,7 @@ export function Onboarding() {
     const isaAccountEntities: IsaAccount[] = isaAccounts.map((a) => ({
       kind: "isa",
       id: a.id,
-      owner: PERSON_ID,
+      owner: a.owner,
       isaType: "stocksAndShares",
       currentBalance: poundsToPence(a.currentBalance),
       annualGrowthRate: a.annualGrowthRate,
@@ -246,7 +339,7 @@ export function Onboarding() {
     const giaAccountEntities: GiaAccount[] = giaAccounts.map((a) => ({
       kind: "gia",
       id: a.id,
-      owner: PERSON_ID,
+      owner: a.owner,
       currentBalance: poundsToPence(a.currentBalance),
       costBasis: poundsToPence(a.costBasis),
       annualGrowthRate: a.annualGrowthRate,
@@ -256,15 +349,55 @@ export function Onboarding() {
     const cashAccountEntities: CashAccount[] = cashAccounts.map((a) => ({
       kind: "cash",
       id: a.id,
-      owner: PERSON_ID,
+      owner: a.owner,
       currentBalance: poundsToPence(a.currentBalance),
       annualGrowthRate: a.annualGrowthRate,
+    }));
+
+    const propertyEntities: Property[] = properties.map((a) => ({
+      kind: "property",
+      id: a.id,
+      owner: a.owner,
+      propertyType: a.propertyType,
+      currentBalance: poundsToPence(a.currentBalance),
+      annualGrowthRate: a.annualGrowthRate,
+      purchasePrice: poundsToPence(a.purchasePrice),
+      purchaseDate: a.purchaseDate,
+      ...(a.propertyType === "rental"
+        ? {
+            rentalDetails: {
+              grossAnnualRentalIncome: poundsToPence(a.grossAnnualRentalIncome),
+              lettingCosts: poundsToPence(a.lettingCosts),
+              annualGrowthRate: a.rentalGrowthRate,
+            },
+          }
+        : {}),
+      ...(a.hasMortgage
+        ? {
+            mortgage: {
+              initialBalance: poundsToPence(a.mortgageInitialBalance),
+              nominalInterestRate: a.mortgageNominalInterestRate,
+              repaymentType: a.mortgageRepaymentType,
+              termYears: a.mortgageTermYears,
+              annualPayment: poundsToPence(a.mortgageAnnualPayment),
+            },
+          }
+        : {}),
+      ...(a.hasPlannedSale && a.saleDate
+        ? {
+            plannedSale: {
+              saleDate: a.saleDate,
+              sellingCosts: poundsToPence(a.sellingCosts),
+              ...(a.expectedSalePrice > 0 ? { expectedSalePrice: poundsToPence(a.expectedSalePrice) } : {}),
+            },
+          }
+        : {}),
     }));
 
     const scenario: Scenario = {
       schemaVersion: 1,
       household,
-      accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities],
+      accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities, ...propertyEntities],
       incomeSources,
       incomeDrains,
       inflationRate,
@@ -279,7 +412,10 @@ export function Onboarding() {
     <Stack maw={560} mx="auto" my="xl" gap="xl">
       <Group justify="space-between">
         <Title order={2}>Your plan</Title>
-        <PlanFileControls />
+        <Group gap="xs">
+          <PlanFileControls />
+          <ColorSchemeToggle />
+        </Group>
       </Group>
 
       <Stack gap="sm">
@@ -291,6 +427,50 @@ export function Onboarding() {
           value={dateOfBirth}
           onChange={(e) => setDateOfBirth(e.currentTarget.value)}
         />
+      </Stack>
+
+      <Stack gap="sm">
+        <Title order={4}>Household</Title>
+        <Switch
+          label="Plan for two people"
+          description="Adds a second person — every account and cash flow below can then be owned by either of you, or jointly (SPEC.md §3.1)"
+          checked={hasSecondPerson}
+          onChange={(e) => setHasSecondPerson(e.currentTarget.checked)}
+        />
+        {hasSecondPerson && (
+          <>
+            <TextInput
+              type="date"
+              label="Their date of birth"
+              required
+              value={personBDateOfBirth}
+              onChange={(e) => setPersonBDateOfBirth(e.currentTarget.value)}
+            />
+            <Select
+              label="Relationship status"
+              description="Gates Marriage Allowance and CGT-free interspousal transfers (SPEC.md §3.1) — married/civil partnership only"
+              data={[
+                { value: "unmarried", label: "Unmarried (co-habiting)" },
+                { value: "marriedOrCivilPartnership", label: "Married / civil partnership" },
+              ]}
+              value={relationshipStatus ?? "unmarried"}
+              onChange={(v) => setRelationshipStatus(v === "marriedOrCivilPartnership" ? "marriedOrCivilPartnership" : "unmarried")}
+            />
+            {relationshipStatus === "marriedOrCivilPartnership" && (
+              <Select
+                label="Marriage Allowance"
+                description="One partner can transfer 10% of their Personal Allowance to the other, if eligible each year (SPEC.md §5.2) — leave blank for no election"
+                data={[
+                  { value: "me", label: "I transfer to them" },
+                  { value: "partner", label: "They transfer to me" },
+                ]}
+                value={marriageAllowanceElection ?? null}
+                onChange={(v) => setMarriageAllowanceElection(v === "me" || v === "partner" ? personId(v) : undefined)}
+                clearable
+              />
+            )}
+          </>
+        )}
       </Stack>
 
       <Stack gap="sm">
@@ -317,6 +497,7 @@ export function Onboarding() {
             key={account.id}
             account={account}
             inflationRate={inflationRate}
+            hasSecondPerson={hasSecondPerson}
             onChange={(updated) => setPensionAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setPensionAccounts((prev) => prev.filter((a) => a.id !== account.id))}
           />
@@ -326,6 +507,7 @@ export function Onboarding() {
             key={account.id}
             account={account}
             inflationRate={inflationRate}
+            hasSecondPerson={hasSecondPerson}
             onChange={(updated) => setIsaAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setIsaAccounts((prev) => prev.filter((a) => a.id !== account.id))}
           />
@@ -335,6 +517,7 @@ export function Onboarding() {
             key={account.id}
             account={account}
             inflationRate={inflationRate}
+            hasSecondPerson={hasSecondPerson}
             onChange={(updated) => setGiaAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setGiaAccounts((prev) => prev.filter((a) => a.id !== account.id))}
           />
@@ -344,8 +527,19 @@ export function Onboarding() {
             key={account.id}
             account={account}
             inflationRate={inflationRate}
+            hasSecondPerson={hasSecondPerson}
             onChange={(updated) => setCashAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setCashAccounts((prev) => prev.filter((a) => a.id !== account.id))}
+          />
+        ))}
+        {properties.map((property) => (
+          <PropertyAccountCard
+            key={property.id}
+            property={property}
+            inflationRate={inflationRate}
+            hasSecondPerson={hasSecondPerson}
+            onChange={(updated) => setProperties((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
+            onRemove={() => setProperties((prev) => prev.filter((a) => a.id !== property.id))}
           />
         ))}
 
@@ -357,6 +551,7 @@ export function Onboarding() {
                 ...prev,
                 {
                   id: generateId("pension"),
+                  owner: PERSON_ID,
                   currentBalance: 0,
                   annualGrowthRate: 0,
                   annualChargeRate: 0.005,
@@ -369,7 +564,9 @@ export function Onboarding() {
           </Button>
           <Button
             variant="light"
-            onClick={() => setIsaAccounts((prev) => [...prev, { id: generateId("isa"), currentBalance: 0, annualGrowthRate: 0 }])}
+            onClick={() =>
+              setIsaAccounts((prev) => [...prev, { id: generateId("isa"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 }])
+            }
           >
             + Add ISA
           </Button>
@@ -378,7 +575,7 @@ export function Onboarding() {
             onClick={() =>
               setGiaAccounts((prev) => [
                 ...prev,
-                { id: generateId("gia"), currentBalance: 0, costBasis: 0, annualGrowthRate: 0, annualDividendYield: 0 },
+                { id: generateId("gia"), owner: PERSON_ID, currentBalance: 0, costBasis: 0, annualGrowthRate: 0, annualDividendYield: 0 },
               ])
             }
           >
@@ -386,9 +583,46 @@ export function Onboarding() {
           </Button>
           <Button
             variant="light"
-            onClick={() => setCashAccounts((prev) => [...prev, { id: generateId("cash"), currentBalance: 0, annualGrowthRate: 0 }])}
+            onClick={() =>
+              setCashAccounts((prev) => [
+                ...prev,
+                { id: generateId("cash"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 },
+              ])
+            }
           >
             + Add cash savings
+          </Button>
+          <Button
+            variant="light"
+            onClick={() =>
+              setProperties((prev) => [
+                ...prev,
+                {
+                  id: generateId("property"),
+                  owner: PERSON_ID,
+                  propertyType: "mainResidence",
+                  currentBalance: 0,
+                  annualGrowthRate: 0,
+                  purchasePrice: 0,
+                  purchaseDate: "",
+                  grossAnnualRentalIncome: 0,
+                  lettingCosts: 0,
+                  rentalGrowthRate: 0,
+                  hasMortgage: false,
+                  mortgageInitialBalance: 0,
+                  mortgageNominalInterestRate: 0,
+                  mortgageRepaymentType: "repayment",
+                  mortgageTermYears: 25,
+                  mortgageAnnualPayment: 0,
+                  hasPlannedSale: false,
+                  saleDate: "",
+                  expectedSalePrice: 0,
+                  sellingCosts: 0,
+                },
+              ])
+            }
+          >
+            + Add property
           </Button>
         </Group>
       </Stack>
@@ -407,6 +641,8 @@ export function Onboarding() {
             isaAccounts={isaAccounts}
             giaAccounts={giaAccounts}
             cashAccounts={cashAccounts}
+            properties={properties}
+            hasSecondPerson={hasSecondPerson}
             inflationRate={inflationRate}
             onChange={(updated) => setIncomeSources((prev) => prev.map((s) => (s.id === updated.id ? (updated as IncomeSourceInstance) : s)))}
             onRemove={() => setIncomeSources((prev) => prev.filter((s) => s.id !== source.id))}
@@ -429,6 +665,8 @@ export function Onboarding() {
             isaAccounts={isaAccounts}
             giaAccounts={giaAccounts}
             cashAccounts={cashAccounts}
+            properties={properties}
+            hasSecondPerson={hasSecondPerson}
             inflationRate={inflationRate}
             onChange={(updated) => setIncomeDrains((prev) => prev.map((d) => (d.id === updated.id ? (updated as IncomeDrainInstance) : d)))}
             onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
@@ -473,14 +711,37 @@ function GrowthRateInput({
   );
 }
 
+/**
+ * Owner selector shared by every account/catalog-instance card — only
+ * rendered when the household has a second person (SPEC.md §3.1).
+ * Pensions/ISAs can never be jointly held (SPEC.md §3.4–3.5), so
+ * `allowJoint` is false for those two cards specifically.
+ */
+function OwnerSelect({ owner, allowJoint, onChange }: { readonly owner: Owner; readonly allowJoint: boolean; readonly onChange: (owner: Owner) => void }) {
+  return (
+    <Select
+      label="Owner"
+      data={[
+        { value: PERSON_ID, label: "Me" },
+        { value: PERSON_B_ID, label: "Them" },
+        ...(allowJoint ? [{ value: "joint", label: "Joint" }] : []),
+      ]}
+      value={owner}
+      onChange={(v) => onChange((v === PERSON_B_ID || (allowJoint && v === "joint") ? v : PERSON_ID) as Owner)}
+    />
+  );
+}
+
 function PensionAccountCard({
   account,
   inflationRate,
+  hasSecondPerson,
   onChange,
   onRemove,
 }: {
   readonly account: PensionAccountDraft;
   readonly inflationRate: number;
+  readonly hasSecondPerson: boolean;
   readonly onChange: (account: PensionAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
@@ -493,6 +754,7 @@ function PensionAccountCard({
         </ActionIcon>
       </Group>
       <Stack gap="sm">
+        {hasSecondPerson && <OwnerSelect owner={account.owner} allowJoint={false} onChange={(owner) => onChange({ ...account, owner: owner as PersonId })} />}
         <NumberInput
           label="Current pot value"
           leftSection="£"
@@ -530,11 +792,13 @@ function PensionAccountCard({
 function IsaAccountCard({
   account,
   inflationRate,
+  hasSecondPerson,
   onChange,
   onRemove,
 }: {
   readonly account: IsaAccountDraft;
   readonly inflationRate: number;
+  readonly hasSecondPerson: boolean;
   readonly onChange: (account: IsaAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
@@ -547,6 +811,7 @@ function IsaAccountCard({
         </ActionIcon>
       </Group>
       <Stack gap="sm">
+        {hasSecondPerson && <OwnerSelect owner={account.owner} allowJoint={false} onChange={(owner) => onChange({ ...account, owner: owner as PersonId })} />}
         <NumberInput
           label="Current balance"
           leftSection="£"
@@ -569,11 +834,13 @@ function IsaAccountCard({
 function GiaAccountCard({
   account,
   inflationRate,
+  hasSecondPerson,
   onChange,
   onRemove,
 }: {
   readonly account: GiaAccountDraft;
   readonly inflationRate: number;
+  readonly hasSecondPerson: boolean;
   readonly onChange: (account: GiaAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
@@ -586,6 +853,7 @@ function GiaAccountCard({
         </ActionIcon>
       </Group>
       <Stack gap="sm">
+        {hasSecondPerson && <OwnerSelect owner={account.owner} allowJoint onChange={(owner) => onChange({ ...account, owner })} />}
         <NumberInput
           label="Current balance"
           leftSection="£"
@@ -625,11 +893,13 @@ function GiaAccountCard({
 function CashAccountCard({
   account,
   inflationRate,
+  hasSecondPerson,
   onChange,
   onRemove,
 }: {
   readonly account: CashAccountDraft;
   readonly inflationRate: number;
+  readonly hasSecondPerson: boolean;
   readonly onChange: (account: CashAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
@@ -642,6 +912,7 @@ function CashAccountCard({
         </ActionIcon>
       </Group>
       <Stack gap="sm">
+        {hasSecondPerson && <OwnerSelect owner={account.owner} allowJoint onChange={(owner) => onChange({ ...account, owner })} />}
         <NumberInput
           label="Current balance"
           leftSection="£"
@@ -662,12 +933,240 @@ function CashAccountCard({
 }
 
 /**
+ * A property is a hand-written Account card, not a catalog type (SPEC.md
+ * §3.8/§8) — it embeds an optional `Mortgage` and, for a rental, its own
+ * rental details, both driven by inline toggles here rather than three
+ * separate cards. Mortgage rate/payment fields are genuinely nominal
+ * (never Fisher-converted, unlike every other rate on this page — see
+ * `Mortgage`'s doc comment in schema/types.ts), so they deliberately skip
+ * `GrowthRateInput`.
+ */
+function PropertyAccountCard({
+  property,
+  inflationRate,
+  hasSecondPerson,
+  onChange,
+  onRemove,
+}: {
+  readonly property: PropertyAccountDraft;
+  readonly inflationRate: number;
+  readonly hasSecondPerson: boolean;
+  readonly onChange: (property: PropertyAccountDraft) => void;
+  readonly onRemove: () => void;
+}) {
+  const suggestedPayment =
+    property.mortgageRepaymentType === "repayment"
+      ? penceToPounds(
+          deriveAnnualRepaymentMortgagePayment(
+            poundsToPence(property.mortgageInitialBalance),
+            property.mortgageNominalInterestRate,
+            property.mortgageTermYears,
+          ),
+        )
+      : property.mortgageInitialBalance * property.mortgageNominalInterestRate;
+
+  return (
+    <Card withBorder padding="sm">
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>Property</Text>
+        <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remove property">
+          ✕
+        </ActionIcon>
+      </Group>
+      <Stack gap="sm">
+        {hasSecondPerson && <OwnerSelect owner={property.owner} allowJoint onChange={(owner) => onChange({ ...property, owner })} />}
+        <Select
+          label="Type"
+          data={[
+            { value: "mainResidence", label: "Main residence" },
+            { value: "rental", label: "Rental / buy-to-let" },
+          ]}
+          value={property.propertyType}
+          onChange={(v) => onChange({ ...property, propertyType: v === "rental" ? "rental" : "mainResidence" })}
+        />
+        <NumberInput
+          label="Current value"
+          leftSection="£"
+          decimalScale={2}
+          thousandSeparator=","
+          value={property.currentBalance}
+          onChange={(v) => onChange({ ...property, currentBalance: typeof v === "number" ? v : 0 })}
+        />
+        <GrowthRateInput
+          label="Expected annual house price growth"
+          realValue={property.annualGrowthRate}
+          inflationRate={inflationRate}
+          onChange={(v) => onChange({ ...property, annualGrowthRate: v })}
+        />
+        <Group grow>
+          <NumberInput
+            label="Purchase price"
+            leftSection="£"
+            decimalScale={2}
+            thousandSeparator=","
+            value={property.purchasePrice}
+            onChange={(v) => onChange({ ...property, purchasePrice: typeof v === "number" ? v : 0 })}
+          />
+          <TextInput
+            type="date"
+            label="Purchase date"
+            description="Used as the CGT cost basis if this is ever sold"
+            value={property.purchaseDate}
+            onChange={(e) => onChange({ ...property, purchaseDate: e.currentTarget.value })}
+          />
+        </Group>
+
+        {property.propertyType === "rental" && (
+          <Card withBorder padding="sm" bg="var(--mantine-color-default-hover)">
+            <Text fw={500} size="sm" mb="xs">
+              Rental details
+            </Text>
+            <Stack gap="sm">
+              <Group grow>
+                <NumberInput
+                  label="Gross annual rental income"
+                  leftSection="£"
+                  decimalScale={2}
+                  thousandSeparator=","
+                  value={property.grossAnnualRentalIncome}
+                  onChange={(v) => onChange({ ...property, grossAnnualRentalIncome: typeof v === "number" ? v : 0 })}
+                />
+                <NumberInput
+                  label="Letting costs (per year)"
+                  description="Management fees, maintenance, insurance, etc."
+                  leftSection="£"
+                  decimalScale={2}
+                  thousandSeparator=","
+                  value={property.lettingCosts}
+                  onChange={(v) => onChange({ ...property, lettingCosts: typeof v === "number" ? v : 0 })}
+                />
+              </Group>
+              <GrowthRateInput
+                label="Expected annual rental growth"
+                realValue={property.rentalGrowthRate}
+                inflationRate={inflationRate}
+                onChange={(v) => onChange({ ...property, rentalGrowthRate: v })}
+              />
+              <Text size="xs" c="dimmed">
+                Add a &ldquo;Rental income&rdquo; income source below, linked to this property, for it to count
+                toward your projection.
+              </Text>
+            </Stack>
+          </Card>
+        )}
+
+        <Switch
+          label="Has a mortgage"
+          checked={property.hasMortgage}
+          onChange={(e) => onChange({ ...property, hasMortgage: e.currentTarget.checked })}
+        />
+        {property.hasMortgage && (
+          <Card withBorder padding="sm" bg="var(--mantine-color-default-hover)">
+            <Text fw={500} size="sm" mb="xs">
+              Mortgage
+            </Text>
+            <Stack gap="sm">
+              <NumberInput
+                label="Outstanding balance"
+                leftSection="£"
+                decimalScale={2}
+                thousandSeparator=","
+                value={property.mortgageInitialBalance}
+                onChange={(v) => onChange({ ...property, mortgageInitialBalance: typeof v === "number" ? v : 0 })}
+              />
+              <NumberInput
+                label="Interest rate"
+                description="A genuine nominal contract rate — not adjusted for inflation, unlike every other rate on this page"
+                rightSection="%"
+                decimalScale={2}
+                value={property.mortgageNominalInterestRate * 100}
+                onChange={(v) => onChange({ ...property, mortgageNominalInterestRate: typeof v === "number" ? v / 100 : 0 })}
+              />
+              <Group grow>
+                <Select
+                  label="Repayment type"
+                  data={[
+                    { value: "repayment", label: "Repayment" },
+                    { value: "interestOnly", label: "Interest-only" },
+                  ]}
+                  value={property.mortgageRepaymentType}
+                  onChange={(v) => onChange({ ...property, mortgageRepaymentType: v === "interestOnly" ? "interestOnly" : "repayment" })}
+                />
+                <NumberInput
+                  label="Remaining term (years)"
+                  value={property.mortgageTermYears}
+                  onChange={(v) => onChange({ ...property, mortgageTermYears: typeof v === "number" ? v : 0 })}
+                />
+              </Group>
+              <NumberInput
+                label="Annual payment"
+                description={`Fixed for the whole term — suggested from balance/rate/term: £${suggestedPayment.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+                leftSection="£"
+                decimalScale={2}
+                thousandSeparator=","
+                value={property.mortgageAnnualPayment}
+                onChange={(v) => onChange({ ...property, mortgageAnnualPayment: typeof v === "number" ? v : 0 })}
+              />
+              <Button variant="subtle" size="xs" onClick={() => onChange({ ...property, mortgageAnnualPayment: Math.round(suggestedPayment * 100) / 100 })}>
+                Use suggested payment
+              </Button>
+            </Stack>
+          </Card>
+        )}
+
+        <Switch
+          label="Has a planned sale"
+          checked={property.hasPlannedSale}
+          onChange={(e) => onChange({ ...property, hasPlannedSale: e.currentTarget.checked })}
+        />
+        {property.hasPlannedSale && (
+          <Card withBorder padding="sm" bg="var(--mantine-color-default-hover)">
+            <Text fw={500} size="sm" mb="xs">
+              Planned sale
+            </Text>
+            <Stack gap="sm">
+              <TextInput
+                type="date"
+                label="Sale date"
+                value={property.saleDate}
+                onChange={(e) => onChange({ ...property, saleDate: e.currentTarget.value })}
+              />
+              <NumberInput
+                label="Expected sale price"
+                description="Leave at £0 to grow the current value to the sale date at the house price growth rate instead"
+                leftSection="£"
+                decimalScale={2}
+                thousandSeparator=","
+                value={property.expectedSalePrice}
+                onChange={(v) => onChange({ ...property, expectedSalePrice: typeof v === "number" ? v : 0 })}
+              />
+              <NumberInput
+                label="Selling costs"
+                description="Agent and legal fees"
+                leftSection="£"
+                decimalScale={2}
+                thousandSeparator=","
+                value={property.sellingCosts}
+                onChange={(v) => onChange({ ...property, sellingCosts: typeof v === "number" ? v : 0 })}
+              />
+            </Stack>
+          </Card>
+        )}
+      </Stack>
+    </Card>
+  );
+}
+
+/**
  * Renders one added Income Source/Drain instance via the generic
  * CatalogItemForm (SPEC.md §3.11) — the one place a field needs
  * something the static schema can't provide (which account a
  * contribution funds) is resolved here, from the currently-added
  * accounts, rather than baked into the catalog type itself.
  */
+/** Catalog types that can only ever be owned by a specific person, never jointly (SPEC.md §3.2, §3.4, §3.5). `targetDrawdownIncome` is deliberately not here — a jointly-owned target is household-combined drawdown optimisation (SPEC.md §5.7.4). */
+const PERSON_ONLY_CATALOG_TYPES = new Set(["salary", "pensionContribution", "isaContribution"]);
+
 function CatalogInstanceCard({
   instance,
   kind,
@@ -675,6 +1174,8 @@ function CatalogInstanceCard({
   isaAccounts,
   giaAccounts,
   cashAccounts,
+  properties,
+  hasSecondPerson,
   inflationRate,
   onChange,
   onRemove,
@@ -685,13 +1186,36 @@ function CatalogInstanceCard({
   readonly isaAccounts: readonly IsaAccountDraft[];
   readonly giaAccounts: readonly GiaAccountDraft[];
   readonly cashAccounts: readonly CashAccountDraft[];
+  readonly properties: readonly PropertyAccountDraft[];
+  readonly hasSecondPerson: boolean;
   readonly inflationRate: number;
   readonly onChange: (instance: IncomeSourceInstance | IncomeDrainInstance) => void;
   readonly onRemove: () => void;
 }) {
   const definition = kind === "source" ? registry.getIncomeSource(instance.type) : registry.getIncomeDrain(instance.type);
+  const rentalProperties = properties.filter((p) => p.propertyType === "rental");
+  const allowJointOwner = !PERSON_ONLY_CATALOG_TYPES.has(instance.type);
 
-  const fields = definition.fields.map((field) => {
+  // A jointly-owned drawdown target auto-discovers each person's own
+  // accounts rather than requiring explicit selection (SPEC.md §5.7.4) —
+  // the account-picker fields are meaningless for it, and conversely the
+  // split-strategy fields are meaningless for a target scoped to one
+  // specific person.
+  const isJointDrawdownTarget = instance.type === "targetDrawdownIncome" && instance.owner === "joint";
+  const fields = definition.fields
+    .filter((field) => {
+      if (instance.type !== "targetDrawdownIncome") return true;
+      const accountPickerFields = ["pensionAccountId", "isaAccountId", "cashAccountId", "giaAccountId"];
+      const splitStrategyFields = ["householdSplitStrategy", "customFirstPersonShare"];
+      if (isJointDrawdownTarget && accountPickerFields.includes(field.key)) return false;
+      if (!isJointDrawdownTarget && splitStrategyFields.includes(field.key)) return false;
+      if (field.key === "customFirstPersonShare") {
+        const config = instance.config as { readonly householdSplitStrategy?: string };
+        return config.householdSplitStrategy === "custom";
+      }
+      return true;
+    })
+    .map((field) => {
       if (field.key === "pensionAccountId") {
         return { ...field, options: pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${a.currentBalance.toLocaleString()})` })) };
       }
@@ -704,6 +1228,11 @@ function CatalogInstanceCard({
       if (field.key === "cashAccountId") {
         return { ...field, options: cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })) };
       }
+      if (field.key === "propertyId") {
+        // Mortgage payments can be linked to any property; rental income only to a rental one.
+        const options = instance.type === "rentalIncome" ? rentalProperties : properties;
+        return { ...field, options: options.map((a) => ({ value: a.id, label: `${a.propertyType === "rental" ? "Rental" : "Main residence"} (£${a.currentBalance.toLocaleString()})` })) };
+      }
       return field;
     });
 
@@ -711,6 +1240,8 @@ function CatalogInstanceCard({
   const needsIsaAccount = fields.some((f) => f.key === "isaAccountId") && isaAccounts.length === 0;
   const needsGiaAccount = fields.some((f) => f.key === "giaAccountId") && giaAccounts.length === 0;
   const needsCashAccount = fields.some((f) => f.key === "cashAccountId") && cashAccounts.length === 0;
+  const needsPropertyAccount =
+    fields.some((f) => f.key === "propertyId") && (instance.type === "rentalIncome" ? rentalProperties.length === 0 : properties.length === 0);
 
   // Generic scheduling (SPEC.md §3.11) — separate from the type's own
   // config, since not every income/outgoing is tied to a person's age
@@ -751,6 +1282,20 @@ function CatalogInstanceCard({
       {needsCashAccount && (
         <Text size="sm" c="orange.7" mb="xs">
           Add a cash savings account above first.
+        </Text>
+      )}
+      {needsPropertyAccount && (
+        <Text size="sm" c="orange.7" mb="xs">
+          Add a {instance.type === "rentalIncome" ? "rental " : ""}property account above first.
+        </Text>
+      )}
+      {hasSecondPerson && (
+        <OwnerSelect owner={instance.owner} allowJoint={allowJointOwner} onChange={(owner) => onChange({ ...instance, owner })} />
+      )}
+      {isJointDrawdownTarget && (
+        <Text size="xs" c="dimmed" mb="xs">
+          Draws from each of your own pension/ISA, and either of your cash/GIA accounts, automatically — the engine
+          works out the most tax-efficient split between you (SPEC.md §5.7.4).
         </Text>
       )}
       <CatalogItemForm
