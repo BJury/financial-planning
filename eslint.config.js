@@ -30,6 +30,15 @@ export default [
         "error",
         { allowNumber: true, allowBoolean: true },
       ],
+      // Catalog type implementations (SPEC.md §3.11/§9.4) share one
+      // interface signature across ~10 modules; not every type uses
+      // every parameter (e.g. Salary's calculateForYear ignores `owner`).
+      // A leading underscore is the standard, explicit "intentionally
+      // unused" marker — allow it rather than forcing awkward workarounds.
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
       // Architectural rule: the engine must stay pure and framework-agnostic.
       // apps/web may import packages/engine; the reverse must never happen.
       "no-restricted-imports": [

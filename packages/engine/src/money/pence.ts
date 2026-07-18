@@ -70,3 +70,21 @@ export function isNegative(amount: Pence): boolean {
 export function multiplyPenceByRate(amount: Pence, rate: number): Pence {
   return pence(roundHalfAwayFromZero(amount * rate));
 }
+
+/** Grows an amount by a single year's rate — `amount * (1 + rate)`, rounded to the penny. */
+export function growPenceByRate(amount: Pence, rate: number): Pence {
+  return multiplyPenceByRate(amount, 1 + rate);
+}
+
+/**
+ * Compounds an amount by a rate over a whole number of periods —
+ * `amount * (1 + rate) ^ periods`, rounded once at the end. Shared by
+ * anything that grows a real-terms value across simulated years without
+ * threading state year-by-year (e.g. uprating a threshold by elapsed
+ * years, or a catalog type computing its current-year amount directly
+ * from a base value and an elapsed year count).
+ */
+export function compoundPenceByRate(amount: Pence, rate: number, periods: number): Pence {
+  const factor = Math.pow(1 + rate, periods);
+  return pence(roundHalfAwayFromZero(amount * factor));
+}

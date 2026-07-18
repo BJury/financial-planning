@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   addPence,
+  compoundPenceByRate,
+  growPenceByRate,
   isNegative,
   maxPence,
   minPence,
@@ -93,5 +95,39 @@ describe("multiplyPenceByRate", () => {
 
   it("handles a rate greater than 1 (e.g. a growth multiplier)", () => {
     expect(multiplyPenceByRate(pence(10000), 1.05)).toBe(10500);
+  });
+});
+
+describe("growPenceByRate", () => {
+  it("grows an amount by a single year's rate", () => {
+    expect(growPenceByRate(pence(10000), 0.05)).toBe(10500);
+  });
+
+  it("shrinks an amount for a negative rate", () => {
+    expect(growPenceByRate(pence(10000), -0.05)).toBe(9500);
+  });
+
+  it("is a no-op at a zero rate", () => {
+    expect(growPenceByRate(pence(12345), 0)).toBe(12345);
+  });
+});
+
+describe("compoundPenceByRate", () => {
+  it("returns the original amount for zero periods", () => {
+    expect(compoundPenceByRate(pence(10000), 0.05, 0)).toBe(10000);
+  });
+
+  it("compounds a positive rate over multiple periods", () => {
+    // £100.00 growing 10%/year for 2 years -> £121.00
+    expect(compoundPenceByRate(pence(10000), 0.1, 2)).toBe(12100);
+  });
+
+  it("compounds a negative rate (a decline) over multiple periods", () => {
+    // £100.00 declining 10%/year for 2 years -> £81.00
+    expect(compoundPenceByRate(pence(10000), -0.1, 2)).toBe(8100);
+  });
+
+  it("is a no-op at a zero rate regardless of periods", () => {
+    expect(compoundPenceByRate(pence(12345), 0, 30)).toBe(12345);
   });
 });
