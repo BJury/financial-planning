@@ -23,6 +23,8 @@ export {
 export { personId } from "./schema/types.js";
 export type {
   Account,
+  CashAccount,
+  GiaAccount,
   Household,
   IncomeDrainInstance,
   IncomeSourceInstance,
@@ -76,6 +78,16 @@ export type { IsaContributionConfig } from "./catalog/incomeDrains/isaContributi
 import "./catalog/incomeDrains/isaContribution.js";
 export type { TargetDrawdownIncomeConfig } from "./catalog/incomeSources/targetDrawdownIncome.js";
 import "./catalog/incomeSources/targetDrawdownIncome.js";
+export type { LivingExpensesConfig } from "./catalog/incomeDrains/livingExpenses.js";
+import "./catalog/incomeDrains/livingExpenses.js";
+export type { OneOffInflowConfig, OneOffInflowCategory } from "./catalog/incomeSources/oneOffInflow.js";
+import "./catalog/incomeSources/oneOffInflow.js";
+export type { OneOffOutflowConfig, OneOffOutflowCategory } from "./catalog/incomeDrains/oneOffOutflow.js";
+import "./catalog/incomeDrains/oneOffOutflow.js";
+export type { GiaContributionConfig } from "./catalog/incomeDrains/giaContribution.js";
+import "./catalog/incomeDrains/giaContribution.js";
+export type { CashContributionConfig } from "./catalog/incomeDrains/cashContribution.js";
+import "./catalog/incomeDrains/cashContribution.js";
 
 // Drawdown solver (SPEC.md §5.7)
 export { solveDrawdown, type DrawdownSolverInputs, type DrawdownSolverResult } from "./drawdown/solveDrawdown.js";

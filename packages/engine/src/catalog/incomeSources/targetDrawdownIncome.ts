@@ -21,6 +21,10 @@ export interface TargetDrawdownIncomeConfig {
   readonly pensionAccountId?: string;
   /** The ISA account this target draws from, if any (v1 scope: at most one). */
   readonly isaAccountId?: string;
+  /** The cash account this target draws from, if any (v1 scope: at most one). */
+  readonly cashAccountId?: string;
+  /** The GIA this target draws from, if any (v1 scope: at most one). */
+  readonly giaAccountId?: string;
 }
 
 const fields: readonly CatalogFieldSchema<TargetDrawdownIncomeConfig>[] = [
@@ -29,6 +33,8 @@ const fields: readonly CatalogFieldSchema<TargetDrawdownIncomeConfig>[] = [
   { key: "endAge", label: "Ends at age", input: "age", required: false },
   { key: "pensionAccountId", label: "Pension account to draw from", input: "select", required: false },
   { key: "isaAccountId", label: "ISA account to draw from", input: "select", required: false },
+  { key: "cashAccountId", label: "Cash account to draw from", input: "select", required: false },
+  { key: "giaAccountId", label: "GIA to draw from", input: "select", required: false },
 ];
 
 function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly ValidationIssue[] {
@@ -42,11 +48,16 @@ function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly Valida
     });
   }
 
-  if (config.pensionAccountId === undefined && config.isaAccountId === undefined) {
+  if (
+    config.pensionAccountId === undefined &&
+    config.isaAccountId === undefined &&
+    config.cashAccountId === undefined &&
+    config.giaAccountId === undefined
+  ) {
     issues.push({
       field: "pensionAccountId",
       tier: "softWarning",
-      message: "No pension or ISA account selected — this target has nothing to draw from.",
+      message: "No account selected — this target has nothing to draw from.",
     });
   }
 

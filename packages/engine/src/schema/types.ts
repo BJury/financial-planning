@@ -49,9 +49,8 @@ export interface Household {
 }
 
 // --- Accounts -----------------------------------------------------------
-// Phase 1 ships PensionAccount and ISAAccount only; GIAAccount,
-// CashAccount, and Property are added in Phase 2/3 as siblings of this
-// same discriminated union, per SPEC.md §8's `Account` polymorphic type.
+// Property is added in Phase 3 as a further sibling of this same
+// discriminated union, per SPEC.md §8's `Account` polymorphic type.
 
 interface AccountBase {
   readonly id: string;
@@ -84,7 +83,49 @@ export interface IsaAccount extends AccountBase {
   readonly currentBalance: Pence;
 }
 
-export type Account = PensionAccount | IsaAccount;
+export interface GiaAccount extends AccountBase {
+  readonly kind: "gia";
+  /**
+   * A GIA can be jointly held (SPEC.md §3.6), unlike a pension or ISA —
+   * typed as `Owner` now even though the current single-person UI never
+   * sets `"joint"`, so this doesn't need reshaping when Phase 5's 50/50
+   * income-splitting for joint accounts is built.
+   */
+  readonly owner: Owner;
+  readonly currentBalance: Pence;
+  /**
+   * The total amount originally invested, tracked separately from
+   * `currentBalance` from day one (SPEC.md §3.6) — needed for a future
+   * capital-gain-on-withdrawal calculation (SPEC.md §5.5, §5.7.2); if
+   * this weren't split out now, reconstructing historical cost basis
+   * later wouldn't be possible.
+   */
+  readonly costBasis: Pence;
+  /**
+   * `annualGrowthRate` (from AccountBase) is capital appreciation only —
+   * unrealised and untaxed until a future withdrawal, per SPEC.md §5.5's
+   * "buy-and-hold" default (capital gains aren't modelled as realised
+   * during accumulation; that's a Phase 4 drawdown-time calculation, not
+   * built yet). This is the separate income portion (dividends), taxed
+   * annually via the Dividend Allowance and reinvested — an
+   * interest-bearing GIA holding isn't modelled separately in v1; use a
+   * `CashAccount` for that instead (SPEC.md §3.6's "split between income
+   * and capital growth").
+   */
+  readonly annualDividendYield: number;
+}
+
+export interface CashAccount extends AccountBase {
+  readonly kind: "cash";
+  /** Can be jointly held (SPEC.md §3.7) — see the note on GiaAccount.owner above. */
+  readonly owner: Owner;
+  readonly currentBalance: Pence;
+  // `annualGrowthRate` (from AccountBase) *is* the interest rate here —
+  // unlike every other account type, cash has no separate untaxed growth
+  // component: all of it is taxable interest income each year (SPEC.md §3.7, §5.5).
+}
+
+export type Account = PensionAccount | IsaAccount | GiaAccount | CashAccount;
 
 // --- Income Sources / Drains ---------------------------------------------
 

@@ -1,8 +1,9 @@
-import { addPence, ageAtYear, getLatestConfirmedRuleSet, penceToPounds, runProjection, sumPence, type Pence, type Scenario } from "@fp/engine";
+import { ageAtYear, getLatestConfirmedRuleSet, penceToPounds, runProjection, sumPence, type Pence, type Scenario } from "@fp/engine";
 import { Alert, Button, Group, Stack, Table, Title } from "@mantine/core";
 import { useMemo } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { PlanFileControls } from "../components/PlanFileControls.js";
 import { useScenarioStore } from "../state/store.js";
 
 /**
@@ -45,9 +46,12 @@ export function Dashboard() {
     <Stack maw={720} mx="auto" my="xl" gap="xl">
       <Group justify="space-between">
         <Title order={2}>Your projection</Title>
-        <Button variant="subtle" onClick={() => void navigate("/")}>
-          Edit plan
-        </Button>
+        <Group gap="xs">
+          <PlanFileControls />
+          <Button variant="subtle" onClick={() => void navigate("/")}>
+            Edit plan
+          </Button>
+        </Group>
       </Group>
 
       <Alert color="blue" variant="light">
@@ -75,6 +79,7 @@ export function Dashboard() {
             <Table.Th>Gross income</Table.Th>
             <Table.Th>Drawdown income</Table.Th>
             <Table.Th>Income Tax</Table.Th>
+            <Table.Th>CGT</Table.Th>
             <Table.Th>NI</Table.Th>
             <Table.Th>Net income</Table.Th>
             <Table.Th>Net worth</Table.Th>
@@ -84,7 +89,9 @@ export function Dashboard() {
           {(result?.rows ?? []).map((row) => {
             const person = row.perPerson[0];
             const netWorth = sumPence([...row.accountBalances.values()]);
-            const totalIncomeTax = person ? addPence(person.incomeTax, person.drawdownIncomeTax) : undefined;
+            const totalIncomeTax = person
+              ? sumPence([person.incomeTax, person.drawdownIncomeTax, person.savingsTax, person.dividendTax])
+              : undefined;
             return (
               <Table.Tr key={row.taxYear}>
                 <Table.Td>{row.taxYear}</Table.Td>
@@ -94,6 +101,7 @@ export function Dashboard() {
                   {person?.drawdownShortfall ? " ⚠" : ""}
                 </Table.Td>
                 <Table.Td>{formatMoney(totalIncomeTax)}</Table.Td>
+                <Table.Td>{formatMoney(person?.drawdownCapitalGainsTax)}</Table.Td>
                 <Table.Td>{formatMoney(person?.nationalInsurance)}</Table.Td>
                 <Table.Td>{formatMoney(person?.netIncome)}</Table.Td>
                 <Table.Td>{formatMoney(netWorth)}</Table.Td>

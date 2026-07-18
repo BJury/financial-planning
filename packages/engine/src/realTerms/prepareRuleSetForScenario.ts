@@ -24,6 +24,23 @@ export interface PreparedYearRules {
     readonly taperMinimumAllowance: Pence;
     readonly lumpSumAllowance: Pence;
   };
+  readonly savingsAllowance: {
+    readonly basicRatePayer: Pence;
+    readonly higherRatePayer: Pence;
+    readonly additionalRatePayer: Pence;
+  };
+  readonly dividendTax: {
+    readonly allowance: Pence;
+    readonly basicRate: number;
+    readonly higherRate: number;
+    readonly additionalRate: number;
+  };
+  readonly capitalGainsTax: {
+    /** An *annual* allowance (unlike the Lump Sum Allowance) — resets every tax year, no cross-year state to track (SPEC.md §5.5). */
+    readonly annualExemptAmount: Pence;
+    readonly basicRate: number;
+    readonly higherRate: number;
+  };
 }
 
 /**
@@ -63,6 +80,22 @@ export function prepareRuleSetForScenario(
       taperThresholdAdjustedIncome: uprate(confirmedRuleSet.pensions.taperThresholdAdjustedIncome),
       taperMinimumAllowance: uprate(confirmedRuleSet.pensions.taperMinimumAllowance),
       lumpSumAllowance: uprate(confirmedRuleSet.pensions.lumpSumAllowance),
+    },
+    savingsAllowance: {
+      basicRatePayer: uprate(confirmedRuleSet.savingsAllowance.basicRatePayer),
+      higherRatePayer: uprate(confirmedRuleSet.savingsAllowance.higherRatePayer),
+      additionalRatePayer: uprate(confirmedRuleSet.savingsAllowance.additionalRatePayer),
+    },
+    dividendTax: {
+      allowance: uprate(confirmedRuleSet.dividendTax.allowance),
+      basicRate: confirmedRuleSet.dividendTax.basicRate,
+      higherRate: confirmedRuleSet.dividendTax.higherRate,
+      additionalRate: confirmedRuleSet.dividendTax.additionalRate,
+    },
+    capitalGainsTax: {
+      annualExemptAmount: uprate(confirmedRuleSet.capitalGainsTax.annualExemptAmount),
+      basicRate: confirmedRuleSet.capitalGainsTax.basicRate,
+      higherRate: confirmedRuleSet.capitalGainsTax.higherRate,
     },
   };
 }

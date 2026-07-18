@@ -18,6 +18,17 @@ function headroomWithNoOtherIncome() {
 }
 
 const ampleLsa = poundsToPence(ruleSet2026_27.pensions.lumpSumAllowance);
+const ampleAea = poundsToPence(ruleSet2026_27.capitalGainsTax.annualExemptAmount);
+const cgtRates = { basicRate: ruleSet2026_27.capitalGainsTax.basicRate, higherRate: ruleSet2026_27.capitalGainsTax.higherRate };
+
+/** No GIA or cash account — spread into inputs for tests that only care about pension/ISA behaviour. */
+const noGiaOrCash = {
+  cashBalance: zeroPence(),
+  giaBalance: zeroPence(),
+  giaCostBasis: zeroPence(),
+  capitalGainsExemptAmountRemaining: ampleAea,
+  capitalGainsRates: cgtRates,
+};
 
 function bucketAmount(result: ReturnType<typeof solveDrawdown>, bucket: string) {
   return result.buckets.find((b) => b.bucket === bucket)?.amount ?? 0;
@@ -31,6 +42,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: ampleLsa,
       isaBalance: poundsToPence(5000),
+      ...noGiaOrCash,
     };
     const result = solveDrawdown(inputs);
 
@@ -51,6 +63,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: ampleLsa,
       isaBalance: poundsToPence(5000),
+      ...noGiaOrCash,
     };
     const result = solveDrawdown(inputs);
 
@@ -73,6 +86,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: poundsToPence(100), // covers only £400 gross (100 * 4) via UFPLS
       isaBalance: poundsToPence(0),
+      ...noGiaOrCash,
     };
     const result = solveDrawdown(inputs);
 
@@ -93,6 +107,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: ampleLsa,
       isaBalance: poundsToPence(5000),
+      ...noGiaOrCash,
     };
     const result = solveDrawdown(inputs);
 
@@ -113,6 +128,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: zeroPence(), // already fully used elsewhere
       isaBalance: zeroPence(),
+      ...noGiaOrCash,
     };
     const result = solveDrawdown(inputs);
 
@@ -131,6 +147,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(5000),
       lumpSumAllowanceRemaining: ampleLsa,
       isaBalance: poundsToPence(5000),
+      ...noGiaOrCash,
     };
     const result = solveDrawdown(inputs);
 
@@ -147,6 +164,7 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: ampleLsa,
       isaBalance: poundsToPence(5000),
+      ...noGiaOrCash,
     });
     expect(result.buckets).toEqual([]);
     expect(result.pensionGrossWithdrawn).toBe(0);
@@ -161,8 +179,128 @@ describe("solveDrawdown", () => {
       pensionBalance: poundsToPence(500000),
       lumpSumAllowanceRemaining: ampleLsa,
       isaBalance: poundsToPence(5000),
+      ...noGiaOrCash,
     });
     const netFromBuckets = sumPence(result.buckets.map((b) => pence(b.amount - b.taxCost)));
     expect(netFromBuckets).toBe(result.netAchieved);
+  });
+});
+
+describe("solveDrawdown — cash and GIA", () => {
+  it("draws cash principal in the free tier, alongside ISA, once the Personal Allowance is exhausted", () => {
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(20000),
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(500000),
+      lumpSumAllowanceRemaining: ampleLsa,
+      isaBalance: poundsToPence(2000),
+      cashBalance: poundsToPence(10000),
+      giaBalance: zeroPence(),
+      giaCostBasis: zeroPence(),
+      capitalGainsExemptAmountRemaining: ampleAea,
+      capitalGainsRates: cgtRates,
+    });
+
+    // £16,760 gross pension fills the PA (net £16,760, 0% cost); £2,000 ISA; the remaining £1,240 from cash.
+    const paGross = poundsToPence(Math.round((12570 / 0.75) * 100) / 100);
+    const remainingAfterPaAndIsa = poundsToPence(20000) - paGross - poundsToPence(2000);
+    expect(bucketAmount(result, "taxFreeCashPrincipal")).toBe(remainingAfterPaAndIsa);
+    expect(result.cashGrossWithdrawn).toBe(remainingAfterPaAndIsa);
+    expect(result.incomeTaxCost).toBe(0);
+    expect(result.shortfall).toBe(false);
+  });
+
+  it("draws GIA tax-free while the gain stays within the CGT Annual Exempt Amount", () => {
+    // £20,000 balance, £10,000 cost basis -> 50% gain fraction. £3,000 AEA / 0.5 = £6,000 gross is fully free.
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(5000),
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: zeroPence(),
+      lumpSumAllowanceRemaining: zeroPence(),
+      isaBalance: zeroPence(),
+      cashBalance: zeroPence(),
+      giaBalance: poundsToPence(20000),
+      giaCostBasis: poundsToPence(10000),
+      capitalGainsExemptAmountRemaining: ampleAea,
+      capitalGainsRates: cgtRates,
+    });
+
+    expect(result.giaGrossWithdrawn).toBe(poundsToPence(5000));
+    expect(bucketAmount(result, "taxFreeGIAReturnOfCapital")).toBe(poundsToPence(2500)); // 50% of £5,000
+    expect(bucketAmount(result, "capitalGainWithinAllowance")).toBe(poundsToPence(2500)); // the other 50%, within the AEA
+    expect(result.capitalGainsExemptAmountUsed).toBe(poundsToPence(2500));
+    expect(result.capitalGainsTaxCost).toBe(0);
+    expect(result.netAchieved).toBe(poundsToPence(5000));
+    expect(result.shortfall).toBe(false);
+  });
+
+  it("charges CGT on GIA gains once the Annual Exempt Amount is exhausted", () => {
+    // 50% gain fraction, £3,000 AEA -> the first £6,000 gross is free; more than that starts incurring CGT on the gain portion.
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(16000),
+      bandHeadroom: headroomWithNoOtherIncome(), // basic rate CGT applies (18%)
+      pensionBalance: zeroPence(),
+      lumpSumAllowanceRemaining: zeroPence(),
+      isaBalance: zeroPence(),
+      cashBalance: zeroPence(),
+      giaBalance: poundsToPence(100000),
+      giaCostBasis: poundsToPence(50000),
+      capitalGainsExemptAmountRemaining: ampleAea,
+      capitalGainsRates: cgtRates,
+    });
+
+    expect(result.capitalGainsExemptAmountUsed).toBe(ampleAea); // fully used
+    expect(bucketAmount(result, "capitalGainTaxable")).toBeGreaterThan(0);
+    expect(result.capitalGainsTaxCost).toBeGreaterThan(0);
+    expect(Math.abs(result.netAchieved - poundsToPence(16000))).toBeLessThanOrEqual(5);
+    expect(result.shortfall).toBe(false);
+  });
+
+  it("prefers GIA over pension at a band once the Lump Sum Allowance is exhausted and the GIA's gain fraction is low enough to net more", () => {
+    // With no LSA left, pension nets (1 - 0.2) = 0.80 per gross pound at basic rate.
+    // A GIA with a 10% gain fraction (mostly cost basis) nets (1 - 0.1*0.18) = 0.982 per gross pound
+    // (once its own AEA is exhausted) — clearly better than pension's 0.80, so the solver should draw
+    // from the GIA before touching pension at this band, given both are offered.
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(20000),
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(500000),
+      lumpSumAllowanceRemaining: zeroPence(), // already exhausted — no UFPLS bonus available
+      isaBalance: zeroPence(),
+      cashBalance: zeroPence(),
+      giaBalance: poundsToPence(500000),
+      giaCostBasis: poundsToPence(450000), // 10% gain fraction
+      capitalGainsExemptAmountRemaining: zeroPence(), // already exhausted — isolates the comparison to the taxed tier
+      capitalGainsRates: cgtRates,
+    });
+
+    // The PA-band step still draws pension first (SPEC.md §5.7.3 step 1 is
+    // unconditional) — with no Lump Sum Allowance left, that's a plain
+    // 1:1 (no UFPLS grossing) fill of the £12,570 Personal Allowance;
+    // GIA should cover the rest at the basic band, since it nets more per pound there.
+    expect(Math.abs(result.pensionGrossWithdrawn - fullAllowance)).toBeLessThanOrEqual(5);
+    expect(result.giaGrossWithdrawn).toBeGreaterThan(0);
+    expect(bucketAmount(result, "taxableBasicRate")).toBe(0);
+  });
+
+  it("reports a shortfall only once pension, ISA, cash, and GIA are all exhausted", () => {
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(100000),
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(2000),
+      lumpSumAllowanceRemaining: ampleLsa,
+      isaBalance: poundsToPence(2000),
+      cashBalance: poundsToPence(2000),
+      giaBalance: poundsToPence(2000),
+      giaCostBasis: poundsToPence(2000),
+      capitalGainsExemptAmountRemaining: ampleAea,
+      capitalGainsRates: cgtRates,
+    });
+
+    expect(result.shortfall).toBe(true);
+    expect(result.pensionGrossWithdrawn).toBe(poundsToPence(2000));
+    expect(result.isaGrossWithdrawn).toBe(poundsToPence(2000));
+    expect(result.cashGrossWithdrawn).toBe(poundsToPence(2000));
+    expect(result.giaGrossWithdrawn).toBe(poundsToPence(2000));
   });
 });

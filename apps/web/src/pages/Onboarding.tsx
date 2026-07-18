@@ -6,7 +6,9 @@ import {
   personId,
   poundsToPence,
   registry,
+  type CashAccount,
   type CatalogFieldSchema,
+  type GiaAccount,
   type Household,
   type IncomeDrainInstance,
   type IncomeSourceInstance,
@@ -19,6 +21,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
 import { CatalogPicker } from "../catalog-ui/CatalogPicker.js";
+import { PlanFileControls } from "../components/PlanFileControls.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
@@ -47,6 +50,20 @@ interface IsaAccountDraft {
   readonly id: string;
   readonly currentBalance: number;
   readonly annualGrowthRate: number; // real
+}
+
+interface GiaAccountDraft {
+  readonly id: string;
+  readonly currentBalance: number;
+  readonly costBasis: number; // pounds — how much was originally paid in, for future CGT purposes
+  readonly annualGrowthRate: number; // real, capital appreciation only
+  readonly annualDividendYield: number; // plain %, not nominal/real — a yield on the current (already-real) balance
+}
+
+interface CashAccountDraft {
+  readonly id: string;
+  readonly currentBalance: number;
+  readonly annualGrowthRate: number; // real — this *is* the interest rate
 }
 
 /**
@@ -90,6 +107,8 @@ interface OnboardingDrafts {
   readonly inflationRate: number;
   readonly pensionAccounts: readonly PensionAccountDraft[];
   readonly isaAccounts: readonly IsaAccountDraft[];
+  readonly giaAccounts: readonly GiaAccountDraft[];
+  readonly cashAccounts: readonly CashAccountDraft[];
   readonly incomeSources: readonly IncomeSourceInstance[];
   readonly incomeDrains: readonly IncomeDrainInstance[];
 }
@@ -109,6 +128,8 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       inflationRate: DEFAULT_INFLATION_RATE,
       pensionAccounts: [],
       isaAccounts: [],
+      giaAccounts: [],
+      cashAccounts: [],
       incomeSources: [],
       incomeDrains: [],
     };
@@ -130,6 +151,18 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       })),
     isaAccounts: scenario.accounts
       .filter((a): a is IsaAccount => a.kind === "isa")
+      .map((a) => ({ id: a.id, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
+    giaAccounts: scenario.accounts
+      .filter((a): a is GiaAccount => a.kind === "gia")
+      .map((a) => ({
+        id: a.id,
+        currentBalance: penceToPounds(a.currentBalance),
+        costBasis: penceToPounds(a.costBasis),
+        annualGrowthRate: a.annualGrowthRate,
+        annualDividendYield: a.annualDividendYield,
+      })),
+    cashAccounts: scenario.accounts
+      .filter((a): a is CashAccount => a.kind === "cash")
       .map((a) => ({ id: a.id, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
     incomeSources: scenario.incomeSources,
     incomeDrains: scenario.incomeDrains,
@@ -160,6 +193,8 @@ export function Onboarding() {
   const [inflationRate, setInflationRate] = useState(initial.inflationRate);
   const [pensionAccounts, setPensionAccounts] = useState<PensionAccountDraft[]>([...initial.pensionAccounts]);
   const [isaAccounts, setIsaAccounts] = useState<IsaAccountDraft[]>([...initial.isaAccounts]);
+  const [giaAccounts, setGiaAccounts] = useState<GiaAccountDraft[]>([...initial.giaAccounts]);
+  const [cashAccounts, setCashAccounts] = useState<CashAccountDraft[]>([...initial.cashAccounts]);
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
 
@@ -208,10 +243,28 @@ export function Onboarding() {
       annualGrowthRate: a.annualGrowthRate,
     }));
 
+    const giaAccountEntities: GiaAccount[] = giaAccounts.map((a) => ({
+      kind: "gia",
+      id: a.id,
+      owner: PERSON_ID,
+      currentBalance: poundsToPence(a.currentBalance),
+      costBasis: poundsToPence(a.costBasis),
+      annualGrowthRate: a.annualGrowthRate,
+      annualDividendYield: a.annualDividendYield,
+    }));
+
+    const cashAccountEntities: CashAccount[] = cashAccounts.map((a) => ({
+      kind: "cash",
+      id: a.id,
+      owner: PERSON_ID,
+      currentBalance: poundsToPence(a.currentBalance),
+      annualGrowthRate: a.annualGrowthRate,
+    }));
+
     const scenario: Scenario = {
       schemaVersion: 1,
       household,
-      accounts: [...pensionAccountEntities, ...isaAccountEntities],
+      accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities],
       incomeSources,
       incomeDrains,
       inflationRate,
@@ -224,7 +277,10 @@ export function Onboarding() {
 
   return (
     <Stack maw={560} mx="auto" my="xl" gap="xl">
-      <Title order={2}>Your plan</Title>
+      <Group justify="space-between">
+        <Title order={2}>Your plan</Title>
+        <PlanFileControls />
+      </Group>
 
       <Stack gap="sm">
         <Title order={4}>About you</Title>
@@ -252,7 +308,8 @@ export function Onboarding() {
       <Stack gap="sm">
         <Title order={4}>Accounts</Title>
         <Text size="sm" c="dimmed">
-          Add an account for each pension or ISA you hold — none are required, and you can add more than one of each.
+          Add an account for each pension, ISA, General Investment Account, or cash savings pot you hold — none are
+          required, and you can add more than one of each.
         </Text>
 
         {pensionAccounts.map((account) => (
@@ -271,6 +328,24 @@ export function Onboarding() {
             inflationRate={inflationRate}
             onChange={(updated) => setIsaAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setIsaAccounts((prev) => prev.filter((a) => a.id !== account.id))}
+          />
+        ))}
+        {giaAccounts.map((account) => (
+          <GiaAccountCard
+            key={account.id}
+            account={account}
+            inflationRate={inflationRate}
+            onChange={(updated) => setGiaAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
+            onRemove={() => setGiaAccounts((prev) => prev.filter((a) => a.id !== account.id))}
+          />
+        ))}
+        {cashAccounts.map((account) => (
+          <CashAccountCard
+            key={account.id}
+            account={account}
+            inflationRate={inflationRate}
+            onChange={(updated) => setCashAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
+            onRemove={() => setCashAccounts((prev) => prev.filter((a) => a.id !== account.id))}
           />
         ))}
 
@@ -298,6 +373,23 @@ export function Onboarding() {
           >
             + Add ISA
           </Button>
+          <Button
+            variant="light"
+            onClick={() =>
+              setGiaAccounts((prev) => [
+                ...prev,
+                { id: generateId("gia"), currentBalance: 0, costBasis: 0, annualGrowthRate: 0, annualDividendYield: 0 },
+              ])
+            }
+          >
+            + Add GIA
+          </Button>
+          <Button
+            variant="light"
+            onClick={() => setCashAccounts((prev) => [...prev, { id: generateId("cash"), currentBalance: 0, annualGrowthRate: 0 }])}
+          >
+            + Add cash savings
+          </Button>
         </Group>
       </Stack>
 
@@ -313,6 +405,8 @@ export function Onboarding() {
             kind="source"
             pensionAccounts={pensionAccounts}
             isaAccounts={isaAccounts}
+            giaAccounts={giaAccounts}
+            cashAccounts={cashAccounts}
             inflationRate={inflationRate}
             onChange={(updated) => setIncomeSources((prev) => prev.map((s) => (s.id === updated.id ? (updated as IncomeSourceInstance) : s)))}
             onRemove={() => setIncomeSources((prev) => prev.filter((s) => s.id !== source.id))}
@@ -324,7 +418,7 @@ export function Onboarding() {
       <Stack gap="sm">
         <Title order={4}>Outgoings</Title>
         <Text size="sm" c="dimmed">
-          Same here — add a drain (a pension or ISA contribution, for now) only if you have one.
+          Same here — add a drain only if you have one.
         </Text>
         {incomeDrains.map((drain) => (
           <CatalogInstanceCard
@@ -333,6 +427,8 @@ export function Onboarding() {
             kind="drain"
             pensionAccounts={pensionAccounts}
             isaAccounts={isaAccounts}
+            giaAccounts={giaAccounts}
+            cashAccounts={cashAccounts}
             inflationRate={inflationRate}
             onChange={(updated) => setIncomeDrains((prev) => prev.map((d) => (d.id === updated.id ? (updated as IncomeDrainInstance) : d)))}
             onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
@@ -470,6 +566,101 @@ function IsaAccountCard({
   );
 }
 
+function GiaAccountCard({
+  account,
+  inflationRate,
+  onChange,
+  onRemove,
+}: {
+  readonly account: GiaAccountDraft;
+  readonly inflationRate: number;
+  readonly onChange: (account: GiaAccountDraft) => void;
+  readonly onRemove: () => void;
+}) {
+  return (
+    <Card withBorder padding="sm">
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>General Investment Account</Text>
+        <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remove General Investment Account">
+          ✕
+        </ActionIcon>
+      </Group>
+      <Stack gap="sm">
+        <NumberInput
+          label="Current balance"
+          leftSection="£"
+          decimalScale={2}
+          thousandSeparator=","
+          value={account.currentBalance}
+          onChange={(v) => onChange({ ...account, currentBalance: typeof v === "number" ? v : 0 })}
+        />
+        <NumberInput
+          label="Cost basis"
+          description="How much you originally paid in, in total — used for a future capital gains calculation when you draw this down"
+          leftSection="£"
+          decimalScale={2}
+          thousandSeparator=","
+          value={account.costBasis}
+          onChange={(v) => onChange({ ...account, costBasis: typeof v === "number" ? v : 0 })}
+        />
+        <GrowthRateInput
+          label="Expected annual capital growth"
+          realValue={account.annualGrowthRate}
+          inflationRate={inflationRate}
+          onChange={(v) => onChange({ ...account, annualGrowthRate: v })}
+        />
+        <NumberInput
+          label="Dividend yield"
+          description="The portion of return paid out as dividends each year — taxed annually and reinvested"
+          rightSection="%"
+          decimalScale={2}
+          value={account.annualDividendYield * 100}
+          onChange={(v) => onChange({ ...account, annualDividendYield: typeof v === "number" ? v / 100 : 0 })}
+        />
+      </Stack>
+    </Card>
+  );
+}
+
+function CashAccountCard({
+  account,
+  inflationRate,
+  onChange,
+  onRemove,
+}: {
+  readonly account: CashAccountDraft;
+  readonly inflationRate: number;
+  readonly onChange: (account: CashAccountDraft) => void;
+  readonly onRemove: () => void;
+}) {
+  return (
+    <Card withBorder padding="sm">
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>Cash savings</Text>
+        <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remove cash savings account">
+          ✕
+        </ActionIcon>
+      </Group>
+      <Stack gap="sm">
+        <NumberInput
+          label="Current balance"
+          leftSection="£"
+          decimalScale={2}
+          thousandSeparator=","
+          value={account.currentBalance}
+          onChange={(v) => onChange({ ...account, currentBalance: typeof v === "number" ? v : 0 })}
+        />
+        <GrowthRateInput
+          label="Interest rate"
+          realValue={account.annualGrowthRate}
+          inflationRate={inflationRate}
+          onChange={(v) => onChange({ ...account, annualGrowthRate: v })}
+        />
+      </Stack>
+    </Card>
+  );
+}
+
 /**
  * Renders one added Income Source/Drain instance via the generic
  * CatalogItemForm (SPEC.md §3.11) — the one place a field needs
@@ -482,6 +673,8 @@ function CatalogInstanceCard({
   kind,
   pensionAccounts,
   isaAccounts,
+  giaAccounts,
+  cashAccounts,
   inflationRate,
   onChange,
   onRemove,
@@ -490,6 +683,8 @@ function CatalogInstanceCard({
   readonly kind: "source" | "drain";
   readonly pensionAccounts: readonly PensionAccountDraft[];
   readonly isaAccounts: readonly IsaAccountDraft[];
+  readonly giaAccounts: readonly GiaAccountDraft[];
+  readonly cashAccounts: readonly CashAccountDraft[];
   readonly inflationRate: number;
   readonly onChange: (instance: IncomeSourceInstance | IncomeDrainInstance) => void;
   readonly onRemove: () => void;
@@ -503,11 +698,19 @@ function CatalogInstanceCard({
       if (field.key === "isaAccountId") {
         return { ...field, options: isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })) };
       }
+      if (field.key === "giaAccountId") {
+        return { ...field, options: giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })) };
+      }
+      if (field.key === "cashAccountId") {
+        return { ...field, options: cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })) };
+      }
       return field;
     });
 
   const needsPensionAccount = fields.some((f) => f.key === "pensionAccountId") && pensionAccounts.length === 0;
   const needsIsaAccount = fields.some((f) => f.key === "isaAccountId") && isaAccounts.length === 0;
+  const needsGiaAccount = fields.some((f) => f.key === "giaAccountId") && giaAccounts.length === 0;
+  const needsCashAccount = fields.some((f) => f.key === "cashAccountId") && cashAccounts.length === 0;
 
   // Generic scheduling (SPEC.md §3.11) — separate from the type's own
   // config, since not every income/outgoing is tied to a person's age
@@ -538,6 +741,16 @@ function CatalogInstanceCard({
       {needsIsaAccount && (
         <Text size="sm" c="orange.7" mb="xs">
           Add an ISA account above first.
+        </Text>
+      )}
+      {needsGiaAccount && (
+        <Text size="sm" c="orange.7" mb="xs">
+          Add a General Investment Account above first.
+        </Text>
+      )}
+      {needsCashAccount && (
+        <Text size="sm" c="orange.7" mb="xs">
+          Add a cash savings account above first.
         </Text>
       )}
       <CatalogItemForm
