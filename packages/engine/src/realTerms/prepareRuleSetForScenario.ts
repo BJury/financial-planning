@@ -17,6 +17,13 @@ export interface PreparedYearRules {
   /** Standard rate bands only — the Personal Allowance is added separately via `buildFullBandStack`. */
   readonly incomeTaxBands: readonly IncomeTaxBand[];
   readonly nationalInsurance: NationalInsuranceThresholds;
+  readonly pensions: {
+    readonly annualAllowance: Pence;
+    readonly taperThresholdIncome: Pence;
+    readonly taperThresholdAdjustedIncome: Pence;
+    readonly taperMinimumAllowance: Pence;
+    readonly lumpSumAllowance: Pence;
+  };
 }
 
 /**
@@ -49,6 +56,13 @@ export function prepareRuleSetForScenario(
       upperEarningsLimit: uprate(confirmedRuleSet.nationalInsurance.upperEarningsLimit),
       mainRate: confirmedRuleSet.nationalInsurance.mainRate,
       upperRate: confirmedRuleSet.nationalInsurance.upperRate,
+    },
+    pensions: {
+      annualAllowance: uprate(confirmedRuleSet.pensions.annualAllowance),
+      taperThresholdIncome: uprate(confirmedRuleSet.pensions.taperThresholdIncome),
+      taperThresholdAdjustedIncome: uprate(confirmedRuleSet.pensions.taperThresholdAdjustedIncome),
+      taperMinimumAllowance: uprate(confirmedRuleSet.pensions.taperMinimumAllowance),
+      lumpSumAllowance: uprate(confirmedRuleSet.pensions.lumpSumAllowance),
     },
   };
 }

@@ -71,6 +71,15 @@ export function multiplyPenceByRate(amount: Pence, rate: number): Pence {
   return pence(roundHalfAwayFromZero(amount * rate));
 }
 
+/**
+ * The inverse of `multiplyPenceByRate` — "how much gross do I need at
+ * this rate to net this amount," used by the drawdown solver (SPEC.md
+ * §5.7.3) to convert a target net figure into a gross withdrawal.
+ */
+export function dividePenceByRate(amount: Pence, rate: number): Pence {
+  return pence(roundHalfAwayFromZero(amount / rate));
+}
+
 /** Grows an amount by a single year's rate — `amount * (1 + rate)`, rounded to the penny. */
 export function growPenceByRate(amount: Pence, rate: number): Pence {
   return multiplyPenceByRate(amount, 1 + rate);

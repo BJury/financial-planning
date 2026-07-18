@@ -37,7 +37,7 @@ export { ageAtYear } from "./schema/age.js";
 export { CURRENT_SCHEMA_VERSION, migrateToLatest, SchemaMigrationError } from "./schema/migrations/index.js";
 
 // Real-terms conversion
-export { convertNominalToReal } from "./realTerms/convertNominalToReal.js";
+export { convertNominalToReal, convertRealToNominal } from "./realTerms/convertNominalToReal.js";
 export { uprateThreshold, type UpratingPolicy } from "./realTerms/uprateThreshold.js";
 export { prepareRuleSetForScenario, type PreparedYearRules } from "./realTerms/prepareRuleSetForScenario.js";
 
@@ -74,6 +74,12 @@ export type { PensionContributionConfig, PensionReliefMethod } from "./catalog/i
 import "./catalog/incomeDrains/pensionContribution.js";
 export type { IsaContributionConfig } from "./catalog/incomeDrains/isaContribution.js";
 import "./catalog/incomeDrains/isaContribution.js";
+export type { TargetDrawdownIncomeConfig } from "./catalog/incomeSources/targetDrawdownIncome.js";
+import "./catalog/incomeSources/targetDrawdownIncome.js";
+
+// Drawdown solver (SPEC.md §5.7)
+export { solveDrawdown, type DrawdownSolverInputs, type DrawdownSolverResult } from "./drawdown/solveDrawdown.js";
+export type { BucketedResult, DrawdownBucket } from "./catalog/types.js";
 
 // Simulation
 export { runProjection, totalTaxForYear } from "./simulation/runProjection.js";

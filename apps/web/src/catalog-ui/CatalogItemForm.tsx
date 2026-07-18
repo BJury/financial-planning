@@ -1,10 +1,26 @@
-import { pence, penceToPounds, poundsToPence, type CatalogFieldSchema, type Pence, type ValidationIssue } from "@fp/engine";
+import {
+  convertNominalToReal,
+  convertRealToNominal,
+  pence,
+  penceToPounds,
+  poundsToPence,
+  type CatalogFieldSchema,
+  type Pence,
+  type ValidationIssue,
+} from "@fp/engine";
 import { Checkbox, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
 
 export interface CatalogItemFormProps<TConfig extends object> {
   readonly fields: readonly CatalogFieldSchema<TConfig>[];
   readonly value: TConfig;
   readonly onChange: (value: TConfig) => void;
+  /**
+   * The Scenario's inflation assumption (SPEC.md §3.10) — needed to
+   * convert a `"growthRate"` field's nominal user input to the real rate
+   * the engine actually stores/simulates with (§5.8), and to convert a
+   * stored real value back to nominal for display.
+   */
+  readonly inflationRate: number;
   readonly issues?: readonly ValidationIssue[];
 }
 
@@ -19,6 +35,7 @@ export function CatalogItemForm<TConfig extends object>({
   fields,
   value,
   onChange,
+  inflationRate,
   issues = [],
 }: CatalogItemFormProps<TConfig>) {
   const issueFor = (fieldKey: string): ValidationIssue | undefined => issues.find((i) => i.field === fieldKey);
@@ -29,7 +46,12 @@ export function CatalogItemForm<TConfig extends object>({
         const issue = issueFor(field.key);
         return (
           <div key={field.key}>
-            <CatalogFieldInput field={field} value={value[field.key]} onChange={(v) => onChange({ ...value, [field.key]: v })} />
+            <CatalogFieldInput
+              field={field}
+              value={value[field.key]}
+              inflationRate={inflationRate}
+              onChange={(v) => onChange({ ...value, [field.key]: v })}
+            />
             {issue && (
               <Text size="sm" c={issue.tier === "hardBlock" ? "red" : "yellow.7"}>
                 {issue.message}
@@ -45,10 +67,12 @@ export function CatalogItemForm<TConfig extends object>({
 function CatalogFieldInput<TConfig>({
   field,
   value,
+  inflationRate,
   onChange,
 }: {
   readonly field: CatalogFieldSchema<TConfig>;
   readonly value: unknown;
+  readonly inflationRate: number;
   readonly onChange: (value: unknown) => void;
 }) {
   switch (field.input) {
@@ -65,6 +89,26 @@ function CatalogFieldInput<TConfig>({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+        />
+      );
+    case "growthRate":
+      // The config value is already a *real* rate (SPEC.md §5.8) — this
+      // is the one place a nominal figure is converted to real, at the
+      // point of entry. Displayed and typed in nominal terms (what
+      // people naturally quote, e.g. "6% growth"), converted to real on
+      // change using the Scenario's inflation rate; converted back to
+      // nominal for display, since the stored value is always real.
+      return (
+        <NumberInput
+          label={field.label}
+          description="Before inflation — adjusted for it automatically"
+          required={field.required}
+          value={typeof value === "number" ? convertRealToNominal(value, inflationRate) * 100 : ""}
+          onChange={(v) =>
+            onChange(typeof v === "number" ? convertNominalToReal(v / 100, inflationRate) : 0)
+          }
+          rightSection="%"
+          decimalScale={2}
         />
       );
     case "percentage":

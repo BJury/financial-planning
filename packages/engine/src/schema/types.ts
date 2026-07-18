@@ -66,6 +66,14 @@ export interface PensionAccount extends AccountBase {
   readonly pensionType: "workplaceDC" | "sipp";
   readonly currentBalance: Pence;
   readonly annualChargeRate: number;
+  /**
+   * A flat annual amount, not an IncomeDrain — employer contributions
+   * aren't a cash outflow from the person's own income at all, just
+   * money the employer adds directly (SPEC.md §3.4). They count toward
+   * the Annual Allowance and are never taxed as the employee's income
+   * (SPEC.md §5.4).
+   */
+  readonly employerAnnualContribution: Pence;
 }
 
 export interface IsaAccount extends AccountBase {
@@ -87,6 +95,15 @@ export interface IncomeSourceInstance<TConfig = unknown> {
   readonly type: string;
   readonly owner: Owner;
   readonly config: TConfig;
+  /**
+   * Optional generic scheduling (ISO dates), independent of any
+   * type-specific `isActive` check (e.g. Salary's age-based `endAge`) —
+   * lets a rental starting in 5 years and running for 10 be expressed
+   * without every catalog type implementing its own start/end handling
+   * (see schema/activeDateRange.ts).
+   */
+  readonly startDate?: string;
+  readonly endDate?: string;
 }
 
 export interface IncomeDrainInstance<TConfig = unknown> {
@@ -94,6 +111,8 @@ export interface IncomeDrainInstance<TConfig = unknown> {
   readonly type: string;
   readonly owner: Owner;
   readonly config: TConfig;
+  readonly startDate?: string;
+  readonly endDate?: string;
 }
 
 // --- Scenario --------------------------------------------------------------

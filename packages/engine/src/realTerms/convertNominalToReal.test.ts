@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { convertNominalToReal } from "./convertNominalToReal.js";
+import { convertNominalToReal, convertRealToNominal } from "./convertNominalToReal.js";
 
 describe("convertNominalToReal", () => {
   it("returns zero real growth when nominal growth equals inflation", () => {
@@ -33,5 +33,20 @@ describe("convertNominalToReal", () => {
 
   it("handles zero inflation (real equals nominal)", () => {
     expect(convertNominalToReal(0.06, 0)).toBeCloseTo(0.06, 10);
+  });
+});
+
+describe("convertRealToNominal", () => {
+  it("is the exact inverse of convertNominalToReal, round-tripping for a range of rates", () => {
+    for (const nominal of [0, 0.02, 0.06, 0.2, -0.05]) {
+      for (const inflation of [0, 0.025, 0.1]) {
+        const real = convertNominalToReal(nominal, inflation);
+        expect(convertRealToNominal(real, inflation)).toBeCloseTo(nominal, 10);
+      }
+    }
+  });
+
+  it("returns the real rate unchanged at zero inflation", () => {
+    expect(convertRealToNominal(0.034146, 0)).toBeCloseTo(0.034146, 10);
   });
 });

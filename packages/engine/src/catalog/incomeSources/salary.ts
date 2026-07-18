@@ -25,7 +25,7 @@ export interface SalaryConfig {
 
 const fields: readonly CatalogFieldSchema<SalaryConfig>[] = [
   { key: "grossAnnualSalary", label: "Gross annual salary", input: "currency", required: true },
-  { key: "annualGrowthRate", label: "Expected annual growth (real)", input: "percentage", required: true },
+  { key: "annualGrowthRate", label: "Expected annual growth", input: "growthRate", required: true },
   { key: "endAge", label: "Ends at age", input: "age", required: false },
 ];
 

@@ -86,3 +86,42 @@ export function buildFullBandStack(
 ): readonly IncomeTaxBand[] {
   return [{ name: "personalAllowance", upTo: taperedPersonalAllowance, rate: 0 }, ...standardBands];
 }
+
+/** How much of one band is still unused, after `taxableIncomeAlreadyUsed` of it has already been taxed elsewhere this year. */
+export interface RemainingBandHeadroom {
+  readonly name: string;
+  readonly rate: number;
+  /** `null` for the unbounded top band. */
+  readonly remainingWidth: Pence | null;
+}
+
+/**
+ * How much headroom is left in each band of a full band stack, after
+ * `taxableIncomeAlreadyUsed` of *other* income (e.g. a salary) has
+ * already consumed some of it this year — the drawdown solver (SPEC.md
+ * §5.7.3) needs this to know which marginal rate the *next* pound of
+ * drawdown income lands in, without re-deriving band-stacking logic
+ * itself. Kept separate from `applyIncomeTaxBands` (§9.3): that function
+ * computes tax on a given amount; this one computes remaining capacity.
+ */
+export function computeRemainingBandHeadroom(
+  bands: readonly IncomeTaxBand[],
+  taxableIncomeAlreadyUsed: Pence,
+): readonly RemainingBandHeadroom[] {
+  let bandFloor = zeroPence();
+
+  return bands.map((band) => {
+    const bandCeiling = band.upTo;
+
+    if (bandCeiling === null) {
+      return { name: band.name, rate: band.rate, remainingWidth: null };
+    }
+
+    const bandWidth = subtractPence(bandCeiling, bandFloor);
+    const usedInThisBand = minPence(maxPence(subtractPence(taxableIncomeAlreadyUsed, bandFloor), zeroPence()), bandWidth);
+    const remainingWidth = maxPence(subtractPence(bandWidth, usedInThisBand), zeroPence());
+    bandFloor = bandCeiling;
+
+    return { name: band.name, rate: band.rate, remainingWidth };
+  });
+}

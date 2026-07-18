@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { pence, poundsToPence } from "../money/pence.js";
 import { ruleSet2026_27 } from "../taxYearData/2026-27.js";
-import { applyIncomeTaxBands, buildFullBandStack, taperPersonalAllowance, type IncomeTaxBand } from "./incomeTax.js";
+import {
+  applyIncomeTaxBands,
+  buildFullBandStack,
+  computeRemainingBandHeadroom,
+  taperPersonalAllowance,
+  type IncomeTaxBand,
+} from "./incomeTax.js";
 
 // The 2026/27 standard rate bands (Personal Allowance excluded — that's
 // added separately via buildFullBandStack, mirroring how the engine
@@ -101,5 +107,42 @@ describe("buildFullBandStack", () => {
     const stack = buildFullBandStack(pence(0), standardBands);
     // With no allowance, the very first pound is taxed at the basic rate.
     expect(applyIncomeTaxBands(pence(100), stack)).toBe(20);
+  });
+});
+
+describe("computeRemainingBandHeadroom", () => {
+  const bands = buildFullBandStack(fullAllowance, standardBands);
+
+  it("with no other income, every band's full width is remaining", () => {
+    const headroom = computeRemainingBandHeadroom(bands, pence(0));
+    expect(headroom.find((b) => b.name === "personalAllowance")?.remainingWidth).toBe(fullAllowance);
+    expect(headroom.find((b) => b.name === "basic")?.remainingWidth).toBe(poundsToPence(37700));
+    expect(headroom.find((b) => b.name === "higher")?.remainingWidth).toBe(poundsToPence(74870));
+    expect(headroom.find((b) => b.name === "additional")?.remainingWidth).toBeNull();
+  });
+
+  it("reduces the Personal Allowance band's headroom by other income within it", () => {
+    const headroom = computeRemainingBandHeadroom(bands, poundsToPence(5000));
+    expect(headroom.find((b) => b.name === "personalAllowance")?.remainingWidth).toBe(
+      pence(fullAllowance - poundsToPence(5000)),
+    );
+    // Nothing yet spills into the basic band.
+    expect(headroom.find((b) => b.name === "basic")?.remainingWidth).toBe(poundsToPence(37700));
+  });
+
+  it("zeroes out the Personal Allowance and partially consumes the basic band once other income exceeds the allowance", () => {
+    // £20,000 other income: £12,570 fills the PA entirely, £7,430 spills into the basic band.
+    const headroom = computeRemainingBandHeadroom(bands, poundsToPence(20000));
+    expect(headroom.find((b) => b.name === "personalAllowance")?.remainingWidth).toBe(0);
+    expect(headroom.find((b) => b.name === "basic")?.remainingWidth).toBe(pence(poundsToPence(37700) - poundsToPence(7430)));
+  });
+
+  it("leaves every band at zero remaining width once other income already exceeds the top finite band's ceiling", () => {
+    const headroom = computeRemainingBandHeadroom(bands, poundsToPence(200000));
+    expect(headroom.find((b) => b.name === "personalAllowance")?.remainingWidth).toBe(0);
+    expect(headroom.find((b) => b.name === "basic")?.remainingWidth).toBe(0);
+    expect(headroom.find((b) => b.name === "higher")?.remainingWidth).toBe(0);
+    // The unbounded top band always reports null, regardless of how much other income there already is.
+    expect(headroom.find((b) => b.name === "additional")?.remainingWidth).toBeNull();
   });
 });

@@ -33,6 +33,22 @@ describe("pensionContributionDefinition.calculateForYear", () => {
     const result = pensionContributionDefinition.calculateForYear(config, makeScenarioState(), yearContext, PERSON_ID);
     expect(result).toEqual({ amount: poundsToPence(5000), taxTreatment: "reliefAtSourceBasicRateTopUp" });
   });
+
+  it("maps the net pay relief method to its tax treatment", () => {
+    const config: PensionContributionConfig = { pensionAccountId: "acc1", reliefMethod: "netPay", annualContribution: poundsToPence(5000) };
+    const result = pensionContributionDefinition.calculateForYear(config, makeScenarioState(), yearContext, PERSON_ID);
+    expect(result).toEqual({ amount: poundsToPence(5000), taxTreatment: "reducesTaxableIncomeNetPay" });
+  });
+
+  it("maps the salary sacrifice relief method to its tax treatment", () => {
+    const config: PensionContributionConfig = {
+      pensionAccountId: "acc1",
+      reliefMethod: "salarySacrifice",
+      annualContribution: poundsToPence(5000),
+    };
+    const result = pensionContributionDefinition.calculateForYear(config, makeScenarioState(), yearContext, PERSON_ID);
+    expect(result).toEqual({ amount: poundsToPence(5000), taxTreatment: "reducesTaxableIncomeAndNISalarySacrifice" });
+  });
 });
 
 describe("pensionContributionDefinition.isActive", () => {

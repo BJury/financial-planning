@@ -10,3 +10,15 @@
 export function convertNominalToReal(nominalRate: number, inflationRate: number): number {
   return (1 + nominalRate) / (1 + inflationRate) - 1;
 }
+
+/**
+ * The inverse of `convertNominalToReal` — recovers the nominal rate that
+ * would produce a given real rate at a given inflation assumption. Used
+ * only for *display*: the engine always stores and simulates with real
+ * rates (SPEC.md §5.8), but a UI showing that stored value back to a
+ * user is more intuitive in the nominal terms they originally thought
+ * in, so this converts it back for that purpose.
+ */
+export function convertRealToNominal(realRate: number, inflationRate: number): number {
+  return (1 + realRate) * (1 + inflationRate) - 1;
+}

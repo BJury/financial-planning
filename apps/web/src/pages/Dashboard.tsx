@@ -1,11 +1,20 @@
-import { getLatestConfirmedRuleSet, penceToPounds, runProjection, sumPence, type Pence } from "@fp/engine";
+import { addPence, ageAtYear, getLatestConfirmedRuleSet, penceToPounds, runProjection, sumPence, type Pence, type Scenario } from "@fp/engine";
 import { Alert, Button, Group, Stack, Table, Title } from "@mantine/core";
 import { useMemo } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useScenarioStore } from "../state/store.js";
 
-const PROJECTION_YEARS = 5;
+/**
+ * The projection runs to the latest of any household member's own
+ * `projectionEndAge` (SPEC.md §3.2) — not a fixed short window — since a
+ * scheduled item (a rental starting in 5 years and running for 10, say)
+ * can easily fall entirely outside a hardcoded few-year horizon.
+ */
+function projectionYearsFor(scenario: Scenario, startCalendarYear: number): number {
+  const yearsPerPerson = scenario.household.people.map((p) => p.projectionEndAge - ageAtYear(p.dateOfBirth, startCalendarYear));
+  return Math.max(1, ...yearsPerPerson);
+}
 
 /**
  * Phase 1's dashboard (SPEC.md §4 journey 2, §7): a minimal net-worth
@@ -18,7 +27,9 @@ export function Dashboard() {
 
   const result = useMemo(() => {
     if (!scenario) return null;
-    return runProjection(scenario, getLatestConfirmedRuleSet(), PROJECTION_YEARS);
+    const confirmedRuleSet = getLatestConfirmedRuleSet();
+    const startCalendarYear = new Date(confirmedRuleSet.effectiveFrom).getUTCFullYear();
+    return runProjection(scenario, confirmedRuleSet, projectionYearsFor(scenario, startCalendarYear));
   }, [scenario]);
 
   if (!scenario) {
@@ -62,6 +73,7 @@ export function Dashboard() {
           <Table.Tr>
             <Table.Th>Tax year</Table.Th>
             <Table.Th>Gross income</Table.Th>
+            <Table.Th>Drawdown income</Table.Th>
             <Table.Th>Income Tax</Table.Th>
             <Table.Th>NI</Table.Th>
             <Table.Th>Net income</Table.Th>
@@ -72,11 +84,16 @@ export function Dashboard() {
           {(result?.rows ?? []).map((row) => {
             const person = row.perPerson[0];
             const netWorth = sumPence([...row.accountBalances.values()]);
+            const totalIncomeTax = person ? addPence(person.incomeTax, person.drawdownIncomeTax) : undefined;
             return (
               <Table.Tr key={row.taxYear}>
                 <Table.Td>{row.taxYear}</Table.Td>
                 <Table.Td>{formatMoney(person?.grossIncome)}</Table.Td>
-                <Table.Td>{formatMoney(person?.incomeTax)}</Table.Td>
+                <Table.Td>
+                  {formatMoney(person?.drawdownNetAchieved)}
+                  {person?.drawdownShortfall ? " ⚠" : ""}
+                </Table.Td>
+                <Table.Td>{formatMoney(totalIncomeTax)}</Table.Td>
                 <Table.Td>{formatMoney(person?.nationalInsurance)}</Table.Td>
                 <Table.Td>{formatMoney(person?.netIncome)}</Table.Td>
                 <Table.Td>{formatMoney(netWorth)}</Table.Td>

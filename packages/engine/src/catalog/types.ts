@@ -23,7 +23,15 @@ export type TaxTreatment =
   | "reducesTaxableIncomeAndNISalarySacrifice"
   | "reliefAtSourceBasicRateTopUp";
 
-export type CatalogInputKind = "currency" | "percentage" | "date" | "age" | "select" | "text" | "boolean";
+/**
+ * `"growthRate"` is deliberately distinct from the generic `"percentage"`
+ * kind: a growth/return rate is entered by the user as a *nominal*
+ * figure and needs converting to real via the Scenario's inflation
+ * assumption before it's stored (SPEC.md §3.10, §5.8) — an ordinary
+ * percentage field (should one exist later) has no such conversion and
+ * must not be swept into the same UI treatment by accident.
+ */
+export type CatalogInputKind = "currency" | "percentage" | "growthRate" | "date" | "age" | "select" | "text" | "boolean";
 
 export interface CatalogFieldSchema<TConfig> {
   readonly key: keyof TConfig & string;
