@@ -1,0 +1,24 @@
+{
+  "name": "financial-planning",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.14.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "lint": "eslint .",
+    "test": "pnpm -r --if-present run test",
+    "build": "pnpm -r --if-present run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "eslint": "^9.18.0",
+    "eslint-plugin-import": "^2.31.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3"
+  }
+}

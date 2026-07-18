@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sort -t: -k1 -n)",
+      "WebFetch(domain:www.gov.uk)",
+      "WebSearch",
+      "Bash(awk -F: '{print $2}')",
+      "Bash(sort -t. -k1,1n -k2,2n)",
+      "Bash(grep -noE \"\\\\b[A-Z]{2,6}\\\\b\" \"c:/Documents/Source/financial-planning/SPEC.md\")",
+      "Bash(grep -oE \"\\\\b[A-Z]{2,6}\\\\b\" \"c:/Documents/Source/financial-planning/SPEC.md\")"
+    ]
+  }
+}
