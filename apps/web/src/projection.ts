@@ -1,14 +1,35 @@
-import { ageAtYear, getLatestConfirmedRuleSet, runProjection, subtractPence, sumPence, type Pence, type ProjectionResult, type Scenario, type YearLedgerRow } from "@fp/engine";
+import {
+  ageAtYear,
+  DEFAULT_PROJECTION_YEARS,
+  getLatestConfirmedRuleSet,
+  runProjection,
+  subtractPence,
+  sumPence,
+  type Pence,
+  type ProjectionResult,
+  type Scenario,
+  type YearLedgerRow,
+} from "@fp/engine";
 
 /**
- * The projection runs to the latest of any household member's own
- * `projectionEndAge` (SPEC.md §3.2) — not a fixed short window — since a
+ * The projection's natural full length runs to the latest of any
+ * household member's own `projectionEndAge` (SPEC.md §3.2) — since a
  * scheduled item (a rental starting in 5 years and running for 10, say)
- * can easily fall entirely outside a hardcoded few-year horizon.
+ * can easily fall entirely outside a hardcoded few-year horizon. The
+ * user-facing `Scenario.projectionYears` (defaulting to
+ * `DEFAULT_PROJECTION_YEARS`) can *shorten* this to something more
+ * readable than "however long until everyone's assumed lifespan ends,"
+ * but deliberately never lengthens it past that natural maximum —
+ * showing years after everyone's own modelled death is meaningless
+ * (survivorship's own `alivePeople` filtering has no defined behaviour
+ * once nobody's left in it), so the two bounds are combined with `min`,
+ * not used as alternatives.
  */
 export function projectionYearsFor(scenario: Scenario, startCalendarYear: number): number {
   const yearsPerPerson = scenario.household.people.map((p) => p.projectionEndAge - ageAtYear(p.dateOfBirth, startCalendarYear));
-  return Math.max(1, ...yearsPerPerson);
+  const naturalMax = Math.max(1, ...yearsPerPerson);
+  const requested = scenario.projectionYears ?? DEFAULT_PROJECTION_YEARS;
+  return Math.max(1, Math.min(requested, naturalMax));
 }
 
 /**

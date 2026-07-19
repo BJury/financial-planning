@@ -279,4 +279,22 @@ export interface Scenario {
   /** A single flat CPI assumption for the whole plan (SPEC.md §3.10). */
   readonly inflationRate: number;
   readonly upratingPolicy: UpratingPolicy;
+  /**
+   * How many years to run the projection for, from the scenario's start
+   * — a user-facing convenience distinct from `Person.projectionEndAge`
+   * (which drives *survivorship*, SPEC.md §5.7.5, and is a per-person
+   * assumed-lifespan concept, not a display-length one). Capped at the
+   * natural maximum still derived from `projectionEndAge` in
+   * `apps/web/src/projection.ts`'s `projectionYearsFor` — this never
+   * extends a projection *past* everyone's own modelled lifespan, only
+   * ever shortens the default full-lifetime span to something more
+   * readable. Optional, like `Person.statePensionAge`, so every existing
+   * `Scenario` value keeps typechecking without modification —
+   * `DEFAULT_PROJECTION_YEARS` is the engine's own fallback wherever
+   * this is absent.
+   */
+  readonly projectionYears?: number;
 }
+
+/** The UI's default projection length, and the engine's own fallback wherever `Scenario.projectionYears` is absent. */
+export const DEFAULT_PROJECTION_YEARS = 30;

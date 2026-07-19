@@ -20,7 +20,7 @@ export {
 } from "./money/pence.js";
 
 // Schema (data model)
-export { DEFAULT_STATE_PENSION_AGE, personId } from "./schema/types.js";
+export { DEFAULT_PROJECTION_YEARS, DEFAULT_STATE_PENSION_AGE, personId } from "./schema/types.js";
 export type {
   Account,
   CashAccount,

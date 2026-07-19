@@ -1,6 +1,7 @@
 import {
   convertNominalToReal,
   convertRealToNominal,
+  DEFAULT_PROJECTION_YEARS,
   DEFAULT_STATE_PENSION_AGE,
   deriveAnnualRepaymentMortgagePayment,
   getLatestConfirmedRuleSet,
@@ -166,6 +167,7 @@ interface OnboardingDrafts {
   readonly dateOfBirth: string;
   readonly statePensionAge: number;
   readonly inflationRate: number;
+  readonly projectionYears: number;
   /** Whether the household has a second person (SPEC.md §3.1) — everything below is only meaningful when this is true. */
   readonly hasSecondPerson: boolean;
   readonly personBDateOfBirth: string;
@@ -197,6 +199,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       dateOfBirth: "",
       statePensionAge: DEFAULT_STATE_PENSION_AGE,
       inflationRate: DEFAULT_INFLATION_RATE,
+      projectionYears: DEFAULT_PROJECTION_YEARS,
       hasSecondPerson: false,
       personBDateOfBirth: "",
       personBStatePensionAge: DEFAULT_STATE_PENSION_AGE,
@@ -225,6 +228,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
     dateOfBirth: personA?.dateOfBirth ?? "",
     statePensionAge: personA?.statePensionAge ?? DEFAULT_STATE_PENSION_AGE,
     inflationRate: scenario.inflationRate,
+    projectionYears: scenario.projectionYears ?? DEFAULT_PROJECTION_YEARS,
     hasSecondPerson: personB !== undefined,
     personBDateOfBirth: personB?.dateOfBirth ?? "",
     personBStatePensionAge: personB?.statePensionAge ?? DEFAULT_STATE_PENSION_AGE,
@@ -311,6 +315,7 @@ export function Onboarding() {
   const [dateOfBirth, setDateOfBirth] = useState(initial.dateOfBirth);
   const [statePensionAge, setStatePensionAge] = useState(initial.statePensionAge);
   const [inflationRate, setInflationRate] = useState(initial.inflationRate);
+  const [projectionYears, setProjectionYears] = useState(initial.projectionYears);
   const [hasSecondPerson, setHasSecondPerson] = useState(initial.hasSecondPerson);
   const [personBDateOfBirth, setPersonBDateOfBirth] = useState(initial.personBDateOfBirth);
   const [personBStatePensionAge, setPersonBStatePensionAge] = useState(initial.personBStatePensionAge);
@@ -467,6 +472,7 @@ export function Onboarding() {
       incomeDrains,
       inflationRate,
       upratingPolicy: { kind: "inflationLinked" },
+      projectionYears,
     };
   };
 
@@ -483,6 +489,7 @@ export function Onboarding() {
       dateOfBirth,
       statePensionAge,
       inflationRate,
+      projectionYears,
       hasSecondPerson,
       personBDateOfBirth,
       personBStatePensionAge,
@@ -597,6 +604,13 @@ export function Onboarding() {
           decimalScale={2}
           value={inflationRate * 100}
           onChange={(v) => setInflationRate(typeof v === "number" ? v / 100 : 0)}
+        />
+        <NumberInput
+          label="Projection length (years)"
+          description="Shortens the projection to a more readable window — it can never run longer than everyone's own assumed lifespan (SPEC.md §3.2), only shorter."
+          min={1}
+          value={projectionYears}
+          onChange={(v) => setProjectionYears(typeof v === "number" ? v : DEFAULT_PROJECTION_YEARS)}
         />
       </Stack>
 

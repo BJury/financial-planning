@@ -15,7 +15,7 @@ import {
 import { Alert, Button, Center, Group, MultiSelect, Stack, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { downloadCsv, projectionToCsv } from "../csvExport.js";
 import { formatMoney } from "../format.js";
 import { computeNetWorth, computeProjection } from "../projection.js";
@@ -305,6 +305,94 @@ function computeKeyFlags(result: ProjectionResult | null): readonly KeyFlag[] {
   return flags;
 }
 
+interface ChartEvent {
+  readonly key: string;
+  readonly taxYear: string;
+  readonly label: string;
+  readonly color: string;
+}
+
+/**
+ * One-off, dated events (SPEC.md §3.8, §3.9) marked directly on the
+ * chart as vertical reference lines — seeing *why* net worth jumps or
+ * dips in a given year (an inheritance landing, a house deposit paid, a
+ * property sold) is easy to miss buried in the year-by-year table, but
+ * hard to miss as a labelled line right on the graph. Maps each event's
+ * own date to whichever projection row's `calendarYear` it falls in,
+ * the same year-only mapping the engine itself uses (no month-level
+ * precision anywhere in this app) — reused here rather than re-derived,
+ * so an event's line always lines up with the exact row its amount
+ * actually landed in.
+ */
+function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonly ChartEvent[] {
+  const events: ChartEvent[] = [];
+  const taxYearForDate = (isoDate: string | undefined): string | undefined => {
+    if (!isoDate) return undefined;
+    const calendarYear = new Date(isoDate).getUTCFullYear();
+    if (Number.isNaN(calendarYear)) return undefined;
+    return result.rows.find((row) => row.calendarYear === calendarYear)?.taxYear;
+  };
+
+  for (const source of scenario.incomeSources) {
+    if (source.type !== "oneOffInflow") continue;
+    const taxYear = taxYearForDate((source.config as { readonly date?: string }).date);
+    if (!taxYear) continue;
+    events.push({ key: `inflow:${source.id}`, taxYear, label: "Inflow", color: "#0ca678" });
+  }
+
+  for (const drain of scenario.incomeDrains) {
+    if (drain.type !== "oneOffOutflow") continue;
+    const taxYear = taxYearForDate((drain.config as { readonly date?: string }).date);
+    if (!taxYear) continue;
+    events.push({ key: `outflow:${drain.id}`, taxYear, label: "Outflow", color: "#e8590c" });
+  }
+
+  for (const account of scenario.accounts) {
+    if (account.kind !== "property" || !account.plannedSale) continue;
+    const taxYear = taxYearForDate(account.plannedSale.saleDate);
+    if (!taxYear) continue;
+    events.push({ key: `sale:${account.id}`, taxYear, label: "Sale", color: "#7048e8" });
+  }
+
+  return events;
+}
+
+interface ShortfallRange {
+  readonly start: string;
+  readonly end: string;
+}
+
+/**
+ * Consecutive tax years where a drawdown target isn't being fully met
+ * (SPEC.md §5.7), merged into runs rather than one marker per year — a
+ * five-year stretch of shortfall reads as one shaded band, not five
+ * overlapping slivers. Household-level (any person's shortfall counts),
+ * matching the existing "Key flags"/table ⚠ convention for the same
+ * condition. Deliberately scoped to *drawdown* shortfall only, not the
+ * related-but-distinct living-expenses shortfall (SPEC.md §5.1 step 7) —
+ * the two are already visually distinguished elsewhere (the table's own
+ * separate ⚠ columns), and conflating them here would blur what the
+ * shading is actually telling you.
+ */
+function computeShortfallRanges(result: ProjectionResult): readonly ShortfallRange[] {
+  const ranges: ShortfallRange[] = [];
+  let start: string | null = null;
+  let end: string | null = null;
+  for (const row of result.rows) {
+    const isShortfall = row.perPerson.some((p) => p.drawdownShortfall);
+    if (isShortfall) {
+      start ??= row.taxYear;
+      end = row.taxYear;
+    } else if (start !== null && end !== null) {
+      ranges.push({ start, end });
+      start = null;
+      end = null;
+    }
+  }
+  if (start !== null && end !== null) ranges.push({ start, end });
+  return ranges;
+}
+
 /**
  * The main-area results pane (SPEC.md §4 journey 2, §7): a minimal
  * net-worth chart and a year-by-year table, all figures in today's
@@ -324,6 +412,8 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
 
   const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
   const keyFlags = useMemo(() => computeKeyFlags(result), [result]);
+  const chartEvents = useMemo(() => (scenario && result ? buildChartEvents(scenario, result) : []), [scenario, result]);
+  const shortfallRanges = useMemo(() => (result ? computeShortfallRanges(result) : []), [result]);
   const accountMetrics = useMemo(() => (scenario ? buildAccountMetrics(scenario) : []), [scenario]);
   const allMetrics = useMemo(() => [...CHART_METRICS, ...accountMetrics], [accountMetrics]);
   const balanceMetrics = useMemo(
@@ -435,6 +525,13 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
         maw={480}
       />
 
+      {(chartEvents.length > 0 || shortfallRanges.length > 0) && (
+        <Text size="xs" c="dimmed">
+          {chartEvents.length > 0 && "Dashed lines mark one-off inflows/outflows and property sales. "}
+          {shortfallRanges.length > 0 && "Shaded red bands mark years a drawdown target isn't fully met."}
+        </Text>
+      )}
+
       <div style={{ height: 300 }}>
         {visibleMetrics.length === 0 ? (
           <Center h="100%">
@@ -444,6 +541,9 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
+              {shortfallRanges.map((r) => (
+                <ReferenceArea key={`shortfall:${r.start}`} x1={r.start} x2={r.end} fill="#e03131" fillOpacity={0.1} ifOverflow="extendDomain" />
+              ))}
               <XAxis
                 dataKey="taxYear"
                 tickFormatter={(v: string) => v.split("-")[0] ?? v}
@@ -463,6 +563,16 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
               <Legend wrapperStyle={{ color: chartTextColor }} />
               {visibleMetrics.map((m) => (
                 <Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} strokeWidth={2} />
+              ))}
+              {chartEvents.map((e) => (
+                <ReferenceLine
+                  key={e.key}
+                  x={e.taxYear}
+                  stroke={e.color}
+                  strokeDasharray="4 4"
+                  ifOverflow="extendDomain"
+                  label={{ value: e.label, position: "top", fill: e.color, fontSize: 10 }}
+                />
               ))}
             </LineChart>
           </ResponsiveContainer>
