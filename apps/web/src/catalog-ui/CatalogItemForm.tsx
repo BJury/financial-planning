@@ -9,6 +9,7 @@ import {
   type ValidationIssue,
 } from "@fp/engine";
 import { Checkbox, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
+import { AgeOrDateInput } from "../components/AgeOrDateInput.js";
 
 export interface CatalogItemFormProps<TConfig extends object> {
   readonly fields: readonly CatalogFieldSchema<TConfig>[];
@@ -21,6 +22,8 @@ export interface CatalogItemFormProps<TConfig extends object> {
    * stored real value back to nominal for display.
    */
   readonly inflationRate: number;
+  /** The owning person's date of birth, if known — lets a `"date"`-typed field (e.g. a one-off inflow's own date) offer the same Date/Age toggle every other person-tied date on the page has. Falls back to a plain date input when undefined (a joint-owned instance, or before a date of birth is filled in). */
+  readonly dateOfBirth?: string;
   readonly issues?: readonly ValidationIssue[];
 }
 
@@ -36,6 +39,7 @@ export function CatalogItemForm<TConfig extends object>({
   value,
   onChange,
   inflationRate,
+  dateOfBirth,
   issues = [],
 }: CatalogItemFormProps<TConfig>) {
   const issueFor = (fieldKey: string): ValidationIssue | undefined => issues.find((i) => i.field === fieldKey);
@@ -50,6 +54,7 @@ export function CatalogItemForm<TConfig extends object>({
               field={field}
               value={value[field.key]}
               inflationRate={inflationRate}
+              {...(dateOfBirth !== undefined ? { dateOfBirth } : {})}
               onChange={(v) => onChange({ ...value, [field.key]: v })}
             />
             {issue && (
@@ -68,11 +73,13 @@ function CatalogFieldInput<TConfig>({
   field,
   value,
   inflationRate,
+  dateOfBirth,
   onChange,
 }: {
   readonly field: CatalogFieldSchema<TConfig>;
   readonly value: unknown;
   readonly inflationRate: number;
+  readonly dateOfBirth?: string;
   readonly onChange: (value: unknown) => void;
 }) {
   switch (field.input) {
@@ -135,12 +142,12 @@ function CatalogFieldInput<TConfig>({
       );
     case "date":
       return (
-        <TextInput
-          type="date"
+        <AgeOrDateInput
           label={field.label}
           required={field.required}
           value={typeof value === "string" ? value : ""}
-          onChange={(e) => onChange(e.currentTarget.value)}
+          dateOfBirth={dateOfBirth}
+          onChange={onChange}
         />
       );
     case "select":

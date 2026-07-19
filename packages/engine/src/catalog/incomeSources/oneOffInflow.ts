@@ -16,6 +16,21 @@ export interface OneOffInflowConfig {
   readonly amount: Pence;
   readonly date: string; // ISO date — the specific tax year it lands in is what's actually checked
   readonly category: OneOffInflowCategory;
+  /**
+   * An ISA, GIA, or cash `Account.id` to invest/deposit this inflow into
+   * directly, if any — resolved and credited in
+   * `simulation/runProjection.ts` (a catalog type's own
+   * `calculateForYear` never sees account balances, SPEC.md §9.1/§9.4,
+   * the same reason `targetDrawdownIncome` is special-cased there too).
+   * Left unset, the amount just becomes ordinary spendable tax-free
+   * income, exactly as before this field existed — picked up by the
+   * automatic surplus sweep only if nothing else consumes it that year.
+   * An ISA destination is capped at the person's remaining annual
+   * subscription limit (shared with any manual ISA contribution drain
+   * and the surplus sweep, all three drawing on the same pool); GIA and
+   * cash destinations have no cap.
+   */
+  readonly destinationAccountId?: string;
 }
 
 const fields: readonly CatalogFieldSchema<OneOffInflowConfig>[] = [
@@ -32,6 +47,7 @@ const fields: readonly CatalogFieldSchema<OneOffInflowConfig>[] = [
       { value: "other", label: "Other" },
     ],
   },
+  { key: "destinationAccountId", label: "Invest into (optional)", input: "select", required: false },
 ];
 
 function validate(config: Readonly<OneOffInflowConfig>): readonly ValidationIssue[] {

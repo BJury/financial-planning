@@ -25,4 +25,16 @@ describe("isWithinActiveDateRange", () => {
     expect(isWithinActiveDateRange("2031-01-01", "2040-12-31", 2040)).toBe(true);
     expect(isWithinActiveDateRange("2031-01-01", "2040-12-31", 2041)).toBe(false);
   });
+
+  it("treats an unparseable bound as not-yet-active, never as unrestricted — a required date field left at its default empty string must not become active every year", () => {
+    // The real bug this guards: NaN comparisons are always false in JS, so
+    // an unguarded `calendarYear < NaN` / `calendarYear > NaN` both
+    // silently pass, making an incomplete date range match *every* year
+    // instead of none.
+    expect(isWithinActiveDateRange("", undefined, 2026)).toBe(false);
+    expect(isWithinActiveDateRange("", undefined, 2099)).toBe(false);
+    expect(isWithinActiveDateRange(undefined, "", 2026)).toBe(false);
+    expect(isWithinActiveDateRange("", "", 2026)).toBe(false);
+    expect(isWithinActiveDateRange("not-a-date", undefined, 2026)).toBe(false);
+  });
 });

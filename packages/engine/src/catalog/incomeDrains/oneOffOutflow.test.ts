@@ -33,6 +33,12 @@ describe("oneOffOutflowDefinition.isActive", () => {
     expect(oneOffOutflowDefinition.isActive(config, makeScenarioState(), yearContext(2028), PERSON_ID)).toBe(true);
     expect(oneOffOutflowDefinition.isActive(config, makeScenarioState(), yearContext(2029), PERSON_ID)).toBe(false);
   });
+
+  it("is never active with the date left at its default empty string — see the identical regression test on oneOffInflow", () => {
+    const undatedConfig: OneOffOutflowConfig = { amount: poundsToPence(5000), date: "", category: "other" };
+    expect(oneOffOutflowDefinition.isActive(undatedConfig, makeScenarioState(), yearContext(2026), PERSON_ID)).toBe(false);
+    expect(oneOffOutflowDefinition.isActive(undatedConfig, makeScenarioState(), yearContext(2050), PERSON_ID)).toBe(false);
+  });
 });
 
 describe("oneOffOutflowDefinition.calculateForYear", () => {

@@ -20,7 +20,7 @@ export {
 } from "./money/pence.js";
 
 // Schema (data model)
-export { personId } from "./schema/types.js";
+export { DEFAULT_STATE_PENSION_AGE, personId } from "./schema/types.js";
 export type {
   Account,
   CashAccount,
@@ -112,6 +112,8 @@ export type { RentalIncomeConfig } from "./catalog/incomeSources/rentalIncome.js
 import "./catalog/incomeSources/rentalIncome.js";
 export type { MortgagePaymentConfig } from "./catalog/incomeDrains/mortgagePayment.js";
 import "./catalog/incomeDrains/mortgagePayment.js";
+export type { StatePensionConfig } from "./catalog/incomeSources/statePension.js";
+import "./catalog/incomeSources/statePension.js";
 
 // Drawdown solver (SPEC.md §5.7)
 export { solveDrawdown, type DrawdownSolverInputs, type DrawdownSolverResult } from "./drawdown/solveDrawdown.js";

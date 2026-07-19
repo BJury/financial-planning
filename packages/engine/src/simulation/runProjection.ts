@@ -33,6 +33,7 @@ import { amortizeMortgageYear } from "../mortgage/amortizeMortgageYear.js";
 import { calculateMortgageInterestCredit, calculateRentalProfit } from "../tax/rentalIncomeTax.js";
 import { applyPrivateResidenceRelief } from "../tax/privateResidenceRelief.js";
 import { calculateCapitalGainsTax } from "../tax/capitalGainsTax.js";
+import { splitGiaWithdrawal } from "../tax/giaWithdrawalSplit.js";
 import { applyMarriageAllowanceTransfer } from "../tax/marriageAllowance.js";
 import {
   breakdownIncomeTaxByBand,
@@ -63,7 +64,9 @@ import type { GiaContributionConfig } from "../catalog/incomeDrains/giaContribut
 import type { CashContributionConfig } from "../catalog/incomeDrains/cashContribution.js";
 import type { TargetDrawdownIncomeConfig } from "../catalog/incomeSources/targetDrawdownIncome.js";
 import type { RentalIncomeConfig } from "../catalog/incomeSources/rentalIncome.js";
-import type { GiaAccount, IsaAccount, Owner, Person, PersonId, Property, Scenario } from "../schema/types.js";
+import type { OneOffInflowConfig } from "../catalog/incomeSources/oneOffInflow.js";
+import { DEFAULT_STATE_PENSION_AGE } from "../schema/types.js";
+import type { CashAccount, GiaAccount, IsaAccount, Owner, Person, PersonId, Property, Scenario } from "../schema/types.js";
 import type { TaxYearRuleSet } from "../taxYearData/types.js";
 
 function isProperty(account: Scenario["accounts"][number]): account is Property {
@@ -102,6 +105,8 @@ export interface PersonYearResult {
   /** Every pension contribution for the year, gross, from every source and relief method, plus employer contributions — the Annual Allowance test figure. */
   readonly pensionInputAmount: Pence;
   readonly annualAllowanceCharge: Pence;
+  /** True when this person's Annual Allowance for pension contributions is capped by the MPAA this year (SPEC.md §5.4) — set once they've flexibly accessed a pension in a *previous* year, and never clears again. */
+  readonly mpaaActive: boolean;
   readonly incomeTax: Pence;
   /** The band-by-band detail behind `incomeTax` (SPEC.md §4 journey 5) — always sums back to it exactly. Earned/pension income only; drawdown/savings/dividend/CGT each have their own separate breakdown. */
   readonly incomeTaxByBand: readonly IncomeTaxBandBreakdown[];
@@ -112,6 +117,18 @@ export interface PersonYearResult {
   readonly nationalInsurance: Pence;
   /** Living expenses, one-off outflows, and any other drain with no account to credit and no tax effect. */
   readonly otherExpenses: Pence;
+  /**
+   * The total this person paid into a pension/ISA/GIA/cash account this
+   * year via an explicit contribution drain (every pension relief method
+   * included, at the amount that actually left their own take-home pay —
+   * a relief-at-source contribution's basic-rate top-up isn't their own
+   * money, so isn't counted here even though it's credited to the
+   * account too). Subtracted from `netIncome` for the same reason
+   * `otherExpenses` is: it's money the person explicitly directed
+   * elsewhere this year, not left over for the automatic surplus sweep
+   * to *also* invest.
+   */
+  readonly accountContributions: Pence;
   /** Total gross withdrawn this year to fund any active drawdown target(s) — pension + ISA + cash + GIA combined (SPEC.md §5.7). */
   readonly drawdownGrossWithdrawn: Pence;
   readonly drawdownIncomeTax: Pence;
@@ -130,6 +147,8 @@ export interface PersonYearResult {
   readonly dividendTax: Pence;
   /** Net rental profit (gross rental income minus whichever of actual letting costs or the Property Income Allowance is larger), including this person's ownership share if the property is jointly held — already folded into `incomeTax`/`incomeTaxByBand` above, since it's taxed at marginal rate stacked with earned/pension income (SPEC.md §5.6). */
   readonly rentalProfitIncome: Pence;
+  /** This person's own State Pension income this year, once claimed (SPEC.md §3.3) — already folded into `incomeTax`/`incomeTaxByBand` above (taxed at marginal rate, stacked alongside earned/pension/rental income), but never NI-able. Zero before their State Pension Age. */
+  readonly statePensionIncome: Pence;
   /** This person's share of the flat-rate mortgage-interest tax credit on any rental property's mortgage (SPEC.md §5.6) — a reduction to the overall tax bill, kept separate from `incomeTax` so that figure still sums exactly from `incomeTaxByBand`. */
   readonly mortgageInterestCredit: Pence;
   /** This person's ownership share of the gain on any property sold this year (SPEC.md §3.8, §5.6) — zero if no sale, or if Private Residence Relief exempted a main residence's gain. */
@@ -145,6 +164,21 @@ export interface PersonYearResult {
   readonly surplusSweptToIsa: Pence;
   /** Surplus beyond the ISA's remaining room (or with no ISA account at all), swept into a GIA instead. */
   readonly surplusSweptToGia: Pence;
+  /**
+   * When `netIncome` is negative (outgoings exceeded income this year),
+   * the shortfall is automatically funded from this person's own liquid
+   * accounts — cash first, then ISA, then GIA — never pension (respects
+   * minimum pension age; only an explicit `TargetDrawdownIncome` can draw
+   * a pension). This is the total drawn across all three. `netIncome`
+   * itself is deliberately left unchanged by this (it's a pure cash-flow
+   * figure — income minus spending for the year); this field is the
+   * separate balance-sheet effect of covering that shortfall.
+   */
+  readonly shortfallFundedFromSavings: Pence;
+  /** CGT on any realised gain from the GIA portion of `shortfallFundedFromSavings` — kept separate from `drawdownCapitalGainsTax` since it's a different mechanism (an automatic fallback, not a solved-for drawdown target). */
+  readonly shortfallCapitalGainsTax: Pence;
+  /** True if `shortfallFundedFromSavings` didn't fully cover the shortfall — available cash/ISA/GIA balances ran out first. */
+  readonly livingExpensesShortfall: boolean;
 }
 
 export interface YearLedgerRow {
@@ -188,11 +222,13 @@ interface Pass1Result {
   readonly grossIncome: Pence;
   readonly taxFreeIncome: Pence;
   readonly rentalProfitIncome: Pence;
+  readonly statePensionIncome: Pence;
   readonly mortgageInterestCredit: Pence;
   readonly grossPensionContribution: Pence;
   readonly salarySacrificeAmount: Pence;
   readonly pensionInputAmount: Pence;
   readonly otherExpenses: Pence;
+  readonly accountContributions: Pence;
   readonly isaContributionsThisYear: Pence;
   readonly taxableIncome: Pence;
   /** The standard rate bands (excluding the Personal Allowance), already widened for any relief-at-source contribution — SPEC.md §5.4. */
@@ -251,6 +287,18 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
   // everything else in this engine) and stay excluded from every later
   // year too, never "coming back."
   let deceasedPersonIds = new Set<PersonId>();
+  // MPAA (SPEC.md §5.4): once a person takes any *taxable* pension income
+  // via drawdown ("flexibly accesses" a pension), their Annual Allowance
+  // for money-purchase contributions is permanently capped at the MPAA
+  // from that point on — never re-evaluated, never reversed. A person's
+  // presence in this set reflects triggers from *previous* years only;
+  // this year's own drawdown (computed later in the loop, after Pass 2a
+  // already needs to know this) can't retroactively affect this same
+  // year's Annual Allowance — a whole-year-granularity simplification
+  // matching every other date-sensitive mechanic in this engine (e.g.
+  // survivorship above), rather than the date-of-trigger precision real
+  // HMRC rules use within a tax year.
+  let mpaaTriggeredPersonIds = new Set<PersonId>();
 
   for (let yearIndex = 0; yearIndex < numberOfYears; yearIndex++) {
     const calendarYear = confirmedCalendarYear + yearIndex;
@@ -370,6 +418,60 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       }
     }
 
+    // One-off inflows with a chosen ISA/GIA/cash destination (an optional
+    // field on `OneOffInflowConfig`) are credited here, once per
+    // instance regardless of ownership split — mirrors the GIA-dividend-
+    // reinvestment loop just above ("apply an account-balance side
+    // effect exactly once, before any per-person split"). An ISA
+    // destination is capped at that account's owner's remaining annual
+    // subscription limit — tracked here and handed to the per-person
+    // loop below as the *starting* point for its own
+    // `isaContributionsThisYear` (shared with manual ISA contribution
+    // drains and the automatic surplus sweep, all three drawing on the
+    // same annual allowance, whichever mechanism runs first this year
+    // gets first claim on the room). GIA and cash destinations have no
+    // cap: the full amount is credited (a GIA's cost basis increases
+    // too — new money in, not a gain; cash has no cost-basis concept at
+    // all). Only the *uncredited* remainder — the whole amount if no
+    // destination is set, or whatever spills over an ISA's cap — still
+    // flows into `taxFreeIncome` below, split by ownership exactly as
+    // before this field existed.
+    const isaSubscriptionUsedByPersonId = new Map<PersonId, Pence>();
+    const oneOffInflowLeftoverBySourceId = new Map<string, Pence>();
+    for (const source of scenario.incomeSources) {
+      if (source.type !== "oneOffInflow") continue;
+      const config = source.config as OneOffInflowConfig;
+      if (!config.destinationAccountId) continue;
+      if (!isWithinActiveDateRange(source.startDate, source.endDate, yearContext.calendarYear)) continue;
+      const definition = registry.getIncomeSource("oneOffInflow");
+      if (!definition.isActive(config, state, yearContext, source.owner)) continue;
+
+      const destinationAccount = scenario.accounts.find((a) => a.id === config.destinationAccountId);
+      if (!destinationAccount) continue;
+
+      if (destinationAccount.kind === "isa") {
+        const alreadyUsed = isaSubscriptionUsedByPersonId.get(destinationAccount.owner) ?? zeroPence();
+        const roomRemaining = maxPence(subtractPence(prepared.isa.annualSubscriptionLimit, alreadyUsed), zeroPence());
+        const credited = minPence(config.amount, roomRemaining);
+        if (credited > 0) {
+          const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+          nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, credited));
+          isaSubscriptionUsedByPersonId.set(destinationAccount.owner, addPence(alreadyUsed, credited));
+        }
+        oneOffInflowLeftoverBySourceId.set(source.id, subtractPence(config.amount, credited));
+      } else if (destinationAccount.kind === "gia") {
+        const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+        nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, config.amount));
+        const currentCostBasis = nextCostBasisByAccountId.get(destinationAccount.id) ?? zeroPence();
+        nextCostBasisByAccountId.set(destinationAccount.id, addPence(currentCostBasis, config.amount));
+        oneOffInflowLeftoverBySourceId.set(source.id, zeroPence());
+      } else if (destinationAccount.kind === "cash") {
+        const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+        nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, config.amount));
+        oneOffInflowLeftoverBySourceId.set(source.id, zeroPence());
+      }
+    }
+
     // Splits against `alivePeople`, not the Scenario's full static list —
     // once one joint owner has died, a joint amount attributes entirely
     // to the survivor (`splitByOwnership`'s own single-person fallback,
@@ -390,6 +492,12 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       //    inflow) is split by ownership share before either use.
       let grossIncome = zeroPence();
       let taxFreeIncome = zeroPence();
+      // State Pension (SPEC.md §3.3, §5.2) — paid gross, taxed at marginal
+      // rate like earned/rental income, but *never* NI-able, so it's kept
+      // out of `grossIncome` (which feeds NI below) and instead folded
+      // into `taxableIncome` directly, the same way `rentalProfitIncome`
+      // already is.
+      let statePensionIncome = zeroPence();
       for (const source of scenario.incomeSources) {
         if (source.owner !== person.id && source.owner !== "joint") continue;
         if (!isWithinActiveDateRange(source.startDate, source.endDate, yearContext.calendarYear)) continue;
@@ -398,11 +506,18 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         if (!definition.isActive(config, state, yearContext, source.owner)) continue;
         const result = definition.calculateForYear(config, state, yearContext, source.owner);
         if (result.kind !== "simple") continue;
-        const amount = ownershipShareFor(result.amount, source.owner, person.id);
+        // A one-off inflow directed at an ISA/GIA (see the household
+        // pre-pass above) already had some or all of it credited
+        // directly — only the leftover still counts as spendable income.
+        const effectiveResultAmount =
+          source.type === "oneOffInflow" ? (oneOffInflowLeftoverBySourceId.get(source.id) ?? result.amount) : result.amount;
+        const amount = ownershipShareFor(effectiveResultAmount, source.owner, person.id);
         if (result.taxCategory === "earnedIncome") {
           grossIncome = addPence(grossIncome, amount);
         } else if (result.taxCategory === "taxFree") {
           taxFreeIncome = addPence(taxFreeIncome, amount);
+        } else if (result.taxCategory === "statePensionIncome") {
+          statePensionIncome = addPence(statePensionIncome, amount);
         }
         // Other tax categories (pensionIncome, rentalProfit, etc.) are handled by their own dedicated passes below.
       }
@@ -441,7 +556,12 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       let salarySacrificeAmount = zeroPence(); // salary sacrifice only — also reduces NIable income
       let pensionInputAmount = zeroPence(); // every method's gross contribution, plus employer contributions below — the Annual Allowance figure
       let otherExpenses = zeroPence(); // living expenses, one-off outflows — reduce spendable cash, not taxable income
-      let isaContributionsThisYear = zeroPence(); // tracked so the surplus-cash sweep below never pushes a person over the combined ISA subscription limit
+      let accountContributions = zeroPence(); // pension/ISA/GIA/cash contributions, at the amount that left this person's own pocket — reduce spendable cash for the same reason otherExpenses does (SPEC.md §5.1 step 6/7): money already explicitly directed elsewhere, not left over for the automatic surplus sweep to also invest
+      // Seeded from whatever a destination-directed one-off inflow already
+      // used this year (household pre-pass above) — the annual ISA
+      // subscription limit is one shared pool across that, a manual ISA
+      // contribution drain below, and the surplus-cash sweep further down.
+      let isaContributionsThisYear = isaSubscriptionUsedByPersonId.get(person.id) ?? zeroPence();
 
       for (const drain of scenario.incomeDrains) {
         if (drain.owner !== person.id && drain.owner !== "joint") continue;
@@ -458,6 +578,11 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           const grossedUp = grossUpAtBasicRate(drainResult.amount, basicRate);
           grossPensionContribution = addPence(grossPensionContribution, grossedUp);
           pensionInputAmount = addPence(pensionInputAmount, grossedUp);
+          // Only drainResult.amount (what the person actually paid) reduces
+          // their spendable cash — the basic-rate top-up above is the
+          // government's money, not theirs, even though both are credited
+          // to the account together.
+          accountContributions = addPence(accountContributions, drainResult.amount);
 
           const { pensionAccountId } = drain.config as PensionContributionConfig;
           const currentBalance = nextAccountBalances.get(pensionAccountId) ?? zeroPence();
@@ -465,6 +590,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         } else if (drainResult.taxTreatment === "reducesTaxableIncomeNetPay") {
           taxableIncomeReduction = addPence(taxableIncomeReduction, drainResult.amount);
           pensionInputAmount = addPence(pensionInputAmount, drainResult.amount);
+          accountContributions = addPence(accountContributions, drainResult.amount);
 
           const { pensionAccountId } = drain.config as PensionContributionConfig;
           const currentBalance = nextAccountBalances.get(pensionAccountId) ?? zeroPence();
@@ -473,6 +599,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           taxableIncomeReduction = addPence(taxableIncomeReduction, drainResult.amount);
           salarySacrificeAmount = addPence(salarySacrificeAmount, drainResult.amount);
           pensionInputAmount = addPence(pensionInputAmount, drainResult.amount);
+          accountContributions = addPence(accountContributions, drainResult.amount);
 
           const { pensionAccountId } = drain.config as PensionContributionConfig;
           const currentBalance = nextAccountBalances.get(pensionAccountId) ?? zeroPence();
@@ -482,6 +609,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           const currentBalance = nextAccountBalances.get(isaAccountId) ?? zeroPence();
           nextAccountBalances.set(isaAccountId, addPence(currentBalance, drainResult.amount));
           isaContributionsThisYear = addPence(isaContributionsThisYear, drainResult.amount);
+          accountContributions = addPence(accountContributions, drainResult.amount);
         } else if (drain.type === "giaContribution") {
           const { giaAccountId } = drain.config as GiaContributionConfig;
           const currentBalance = nextAccountBalances.get(giaAccountId) ?? zeroPence();
@@ -489,10 +617,12 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           // New money invested, not a gain — increases cost basis too (SPEC.md §3.6).
           const currentCostBasis = nextCostBasisByAccountId.get(giaAccountId) ?? zeroPence();
           nextCostBasisByAccountId.set(giaAccountId, addPence(currentCostBasis, drainResult.amount));
+          accountContributions = addPence(accountContributions, drainResult.amount);
         } else if (drain.type === "cashContribution") {
           const { cashAccountId } = drain.config as CashContributionConfig;
           const currentBalance = nextAccountBalances.get(cashAccountId) ?? zeroPence();
           nextAccountBalances.set(cashAccountId, addPence(currentBalance, drainResult.amount));
+          accountContributions = addPence(accountContributions, drainResult.amount);
         } else {
           // Living expenses, one-off outflows, and any other drain with no
           // account to credit and no tax effect (SPEC.md §5.1 step 6) —
@@ -531,10 +661,14 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       //    *before* any Marriage Allowance transfer — net pay/salary
       //    sacrifice reduce taxable income directly; relief-at-source
       //    extends the basic/higher band ceilings instead and separately
-      //    reduces adjusted net income for the taper. Rental profit stacks
-      //    in here too — it's taxed at marginal rate alongside
-      //    earned/pension income, not via a separate rate.
-      const taxableIncome = applyNetPayRelief(addPence(grossIncome, rentalProfitIncome), taxableIncomeReduction);
+      //    reduces adjusted net income for the taper. Rental profit and
+      //    State Pension both stack in here too — each is taxed at
+      //    marginal rate alongside earned/pension income, not via a
+      //    separate rate (SPEC.md §5.2, §5.6).
+      const taxableIncome = applyNetPayRelief(
+        addPence(addPence(grossIncome, rentalProfitIncome), statePensionIncome),
+        taxableIncomeReduction,
+      );
       const extendedBands = extendBandsForReliefAtSource(prepared.incomeTaxBands, grossPensionContribution);
       const adjustedNetIncomeForPersonalAllowance = subtractPence(taxableIncome, grossPensionContribution);
       const taperedAllowancePreMarriageAllowance = taperPersonalAllowance(
@@ -549,11 +683,13 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         grossIncome,
         taxFreeIncome,
         rentalProfitIncome,
+        statePensionIncome,
         mortgageInterestCredit,
         grossPensionContribution,
         salarySacrificeAmount,
         pensionInputAmount,
         otherExpenses,
+        accountContributions,
         isaContributionsThisYear,
         taxableIncome,
         extendedBands,
@@ -684,14 +820,28 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       }
 
       // 4. National Insurance — independent of Income Tax (SPEC.md §5.3,
-      //    §9.3); only salary sacrifice reduces NIable pay.
+      //    §9.3); only salary sacrifice reduces NIable pay. Stops
+      //    accruing entirely from State Pension Age onward, even if still
+      //    employed (SPEC.md §5.3) — the same age that gates the
+      //    `statePension` catalog source itself (SPEC.md §3.3), so both
+      //    read the same `Person.statePensionAge` fallback.
+      const hasReachedStatePensionAge =
+        ageAtYear(person.dateOfBirth, yearContext.calendarYear) >= (person.statePensionAge ?? DEFAULT_STATE_PENSION_AGE);
       const niableIncome = applySalarySacrifice(pass1.grossIncome, pass1.salarySacrificeAmount);
-      const nationalInsurance = calculateNI(niableIncome, prepared.nationalInsurance);
+      const nationalInsurance = hasReachedStatePensionAge ? zeroPence() : calculateNI(niableIncome, prepared.nationalInsurance);
 
       // 5. Annual Allowance: taper this person's allowance by their
       //    threshold/adjusted income, consume this year's (then any
       //    carried-forward) allowance, and charge any true excess at
-      //    their marginal rate (SPEC.md §5.4).
+      //    their marginal rate (SPEC.md §5.4). If MPAA was triggered in a
+      //    previous year (flagged below, after this year's own drawdown
+      //    runs), it further caps the allowance at a flat figure — MPAA
+      //    isn't itself income-tapered — and, per HMRC rules, no
+      //    carry-forward can be used against it: an MPAA-affected person's
+      //    carry-forward window is bypassed entirely (and left empty for
+      //    future years too, since MPAA never reverses) rather than
+      //    passed through `applyAnnualAllowanceCarryForward` normally.
+      const mpaaActive = mpaaTriggeredPersonIds.has(person.id);
       const { thresholdIncome, adjustedIncome } = calculateThresholdAndAdjustedIncome({
         taxableIncomeAfterPensionDeductions: pass1.taxableIncome,
         salarySacrificeAmount: pass1.salarySacrificeAmount,
@@ -705,12 +855,15 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         taperThresholdAdjustedIncome: prepared.pensions.taperThresholdAdjustedIncome,
         taperMinimumAllowance: prepared.pensions.taperMinimumAllowance,
       });
+      const effectiveAnnualAllowance = mpaaActive
+        ? minPence(taperedAnnualAllowance, prepared.pensions.moneyPurchaseAnnualAllowance)
+        : taperedAnnualAllowance;
       const carryForwardResult = applyAnnualAllowanceCarryForward({
         totalContribution: pass1.pensionInputAmount,
-        currentYearAllowance: taperedAnnualAllowance,
-        unusedAllowanceByPreviousThreeYears: carryForwardWindows.get(person.id) ?? emptyCarryForwardWindow(),
+        currentYearAllowance: effectiveAnnualAllowance,
+        unusedAllowanceByPreviousThreeYears: mpaaActive ? emptyCarryForwardWindow() : (carryForwardWindows.get(person.id) ?? emptyCarryForwardWindow()),
       });
-      nextCarryForwardWindows.set(person.id, carryForwardResult.nextUnusedAllowanceByPreviousThreeYears);
+      nextCarryForwardWindows.set(person.id, mpaaActive ? emptyCarryForwardWindow() : carryForwardResult.nextUnusedAllowanceByPreviousThreeYears);
       const annualAllowanceCharge = calculateAnnualAllowanceCharge(pass1.taxableIncome, carryForwardResult.excessContribution, fullBands);
 
       return {
@@ -724,6 +877,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         propertySaleNetProceeds,
         nationalInsurance,
         annualAllowanceCharge,
+        mpaaActive,
         capitalGainsExemptAmountRemainingAfterPropertySale: capitalGainsExemptAmountRemaining,
       };
     });
@@ -751,6 +905,21 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       taxableIncomeSoFarForBands: Pence;
       /** Starts at this person's own remaining Annual Exempt Amount (post property sale) — an annual, not lifetime, allowance (SPEC.md §5.5). */
       capitalGainsExemptAmountRemaining: Pence;
+      /**
+       * Every ISA/GIA account this year's drawdown actually drew a
+       * nonzero amount from — read by the surplus sweep below (6c) so it
+       * never reinvests achieved-but-unspent drawdown income right back
+       * into the very account it just came from (a real bug this
+       * prevents: an ISA-only, no-living-expenses scenario would
+       * otherwise show a drawdown "succeeding" every year while its
+       * source account's balance never actually fell, since the swept
+       * surplus silently replaced what was just withdrawn). Deliberately
+       * doesn't block a *different* account of the same kind, or the
+       * shortfall-funding step (6d), which only ever draws down further
+       * and reads the already-updated balance, so it can't loop the same
+       * way.
+       */
+      readonly touchedAccountIds: Set<string>;
     }
     const drawdownAccumulators = new Map<PersonId, DrawdownAccumulator>(
       pass2aResults.map((p) => [
@@ -764,6 +933,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           bucketTotals: new Map(),
           taxableIncomeSoFarForBands: p.pass1.taxableIncome,
           capitalGainsExemptAmountRemaining: p.capitalGainsExemptAmountRemainingAfterPropertySale,
+          touchedAccountIds: new Set<string>(),
         },
       ]),
     );
@@ -779,7 +949,11 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       }
     };
 
-    const applyDrawdownResultToAccumulator = (personId: PersonId, result: DrawdownSolverResult) => {
+    const applyDrawdownResultToAccumulator = (
+      personId: PersonId,
+      result: DrawdownSolverResult,
+      accountIds: ReturnType<typeof discoverAccountIds>,
+    ) => {
       const accumulator = drawdownAccumulators.get(personId);
       if (!accumulator) return;
       // Only ordinary taxable pension income occupies Income Tax band
@@ -798,46 +972,84 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       accumulator.netAchieved = addPence(accumulator.netAchieved, result.netAchieved);
       accumulator.shortfall = accumulator.shortfall || result.shortfall;
       mergeBucketsInto(accumulator, result.buckets);
+      if (result.isaGrossWithdrawn > 0) {
+        for (const id of accountIds.isaAccountIds) accumulator.touchedAccountIds.add(id);
+      }
+      if (result.giaGrossWithdrawn > 0) {
+        for (const id of accountIds.giaAccountIds) accumulator.touchedAccountIds.add(id);
+      }
     };
 
-    /** This person's own pension/ISA (never joint) and cash/GIA (their own, else a joint one) — v1 scope: at most one of each (matches `solveDrawdown`'s own documented limit). Used only for a *joint* target — a person-scoped target still uses its own config's explicit account ids (`discoverConfiguredAccountIds`), unchanged from before. */
+    /**
+     * Every account this person's drawdown target can draw from — their
+     * own pension/ISA (never joint) and their own-or-joint cash/GIA,
+     * *pooled* rather than limited to one of each: someone with two
+     * pensions expects a retirement income target to use both, not just
+     * whichever one was picked from a dropdown (this used to be a v1
+     * "at most one" limitation — see `solveDrawdown.ts`'s doc comment).
+     * Used for both a joint target and a person-scoped one alike now —
+     * there's no more separate "explicitly configured account id" path.
+     */
     const discoverAccountIds = (personId: PersonId) => ({
-      pensionAccountId: scenario.accounts.find((a) => a.kind === "pension" && a.owner === personId)?.id,
-      isaAccountId: scenario.accounts.find((a) => a.kind === "isa" && a.owner === personId)?.id,
-      cashAccountId: scenario.accounts.find((a) => a.kind === "cash" && (a.owner === personId || a.owner === "joint"))?.id,
-      giaAccountId: scenario.accounts.find((a) => a.kind === "gia" && (a.owner === personId || a.owner === "joint"))?.id,
-    });
-
-    /** A person-scoped target still draws only from the accounts explicitly picked in its own config — unlike a joint target, which auto-discovers (`discoverAccountIds` above). */
-    const discoverConfiguredAccountIds = (config: TargetDrawdownIncomeConfig) => ({
-      pensionAccountId: config.pensionAccountId,
-      isaAccountId: config.isaAccountId,
-      cashAccountId: config.cashAccountId,
-      giaAccountId: config.giaAccountId,
+      pensionAccountIds: scenario.accounts.filter((a) => a.kind === "pension" && a.owner === personId).map((a) => a.id),
+      isaAccountIds: scenario.accounts.filter((a) => a.kind === "isa" && a.owner === personId).map((a) => a.id),
+      cashAccountIds: scenario.accounts.filter((a) => a.kind === "cash" && (a.owner === personId || a.owner === "joint")).map((a) => a.id),
+      giaAccountIds: scenario.accounts.filter((a) => a.kind === "gia" && (a.owner === personId || a.owner === "joint")).map((a) => a.id),
     });
 
     const balancesFor = (accountIds: ReturnType<typeof discoverAccountIds>) => ({
-      pensionBalance: accountIds.pensionAccountId ? (nextAccountBalances.get(accountIds.pensionAccountId) ?? zeroPence()) : zeroPence(),
-      isaBalance: accountIds.isaAccountId ? (nextAccountBalances.get(accountIds.isaAccountId) ?? zeroPence()) : zeroPence(),
-      cashBalance: accountIds.cashAccountId ? (nextAccountBalances.get(accountIds.cashAccountId) ?? zeroPence()) : zeroPence(),
-      giaBalance: accountIds.giaAccountId ? (nextAccountBalances.get(accountIds.giaAccountId) ?? zeroPence()) : zeroPence(),
-      giaCostBasis: accountIds.giaAccountId ? (nextCostBasisByAccountId.get(accountIds.giaAccountId) ?? zeroPence()) : zeroPence(),
+      pensionBalance: sumPence(accountIds.pensionAccountIds.map((id) => nextAccountBalances.get(id) ?? zeroPence())),
+      isaBalance: sumPence(accountIds.isaAccountIds.map((id) => nextAccountBalances.get(id) ?? zeroPence())),
+      cashBalance: sumPence(accountIds.cashAccountIds.map((id) => nextAccountBalances.get(id) ?? zeroPence())),
+      giaBalance: sumPence(accountIds.giaAccountIds.map((id) => nextAccountBalances.get(id) ?? zeroPence())),
+      giaCostBasis: sumPence(accountIds.giaAccountIds.map((id) => nextCostBasisByAccountId.get(id) ?? zeroPence())),
     });
 
-    const creditAccountsAfterDrawdown = (accountIds: ReturnType<typeof discoverAccountIds>, balances: ReturnType<typeof balancesFor>, result: DrawdownSolverResult) => {
-      if (accountIds.pensionAccountId) {
-        nextAccountBalances.set(accountIds.pensionAccountId, subtractPence(balances.pensionBalance, result.pensionGrossWithdrawn));
-      }
-      if (accountIds.isaAccountId) {
-        nextAccountBalances.set(accountIds.isaAccountId, subtractPence(balances.isaBalance, result.isaGrossWithdrawn));
-      }
-      if (accountIds.cashAccountId) {
-        nextAccountBalances.set(accountIds.cashAccountId, subtractPence(balances.cashBalance, result.cashGrossWithdrawn));
-      }
-      if (accountIds.giaAccountId) {
-        nextAccountBalances.set(accountIds.giaAccountId, subtractPence(balances.giaBalance, result.giaGrossWithdrawn));
+    /**
+     * Splits an aggregate withdrawal back across the individual accounts
+     * it was pooled from, proportional to each account's own balance
+     * just before the draw — the last account absorbs the exact
+     * remainder rather than being independently rounded (this engine's
+     * usual exact-by-construction split pattern, e.g. `splitByOwnership`).
+     * With a single account, this always assigns it the full amount, so
+     * every existing one-account-per-kind scenario behaves identically
+     * to before pooling existed.
+     */
+    const apportionByPriorBalance = (priorBalances: readonly Pence[], amount: Pence): Pence[] => {
+      const total = sumPence(priorBalances);
+      if (priorBalances.length === 0 || amount <= 0 || total <= 0) return priorBalances.map(() => zeroPence());
+      const shares = priorBalances.map((bal) => Math.round(amount * (bal / total)) as Pence);
+      const allocatedExceptLast = sumPence(shares.slice(0, -1));
+      shares[shares.length - 1] = subtractPence(amount, allocatedExceptLast);
+      return shares;
+    };
+
+    const creditAccountsAfterDrawdown = (accountIds: ReturnType<typeof discoverAccountIds>, result: DrawdownSolverResult) => {
+      const applyWithdrawal = (ids: readonly string[], grossWithdrawn: Pence) => {
+        if (ids.length === 0) return;
+        const priorBalances = ids.map((id) => nextAccountBalances.get(id) ?? zeroPence());
+        const shares = apportionByPriorBalance(priorBalances, grossWithdrawn);
+        ids.forEach((id, i) => nextAccountBalances.set(id, subtractPence(priorBalances[i] ?? zeroPence(), shares[i] ?? zeroPence())));
+      };
+      applyWithdrawal(accountIds.pensionAccountIds, result.pensionGrossWithdrawn);
+      applyWithdrawal(accountIds.isaAccountIds, result.isaGrossWithdrawn);
+      applyWithdrawal(accountIds.cashAccountIds, result.cashGrossWithdrawn);
+
+      if (accountIds.giaAccountIds.length > 0) {
+        const priorBalances = accountIds.giaAccountIds.map((id) => nextAccountBalances.get(id) ?? zeroPence());
+        const balanceShares = apportionByPriorBalance(priorBalances, result.giaGrossWithdrawn);
         const returnOfCapital = result.buckets.find((b) => b.bucket === "taxFreeGIAReturnOfCapital")?.amount ?? zeroPence();
-        nextCostBasisByAccountId.set(accountIds.giaAccountId, subtractPence(balances.giaCostBasis, returnOfCapital));
+        // Apportioned by the same prior-balance weights as the
+        // withdrawal itself (not re-derived per account from each
+        // account's own cost basis) — this keeps every account's own
+        // implied gain fraction identical to the pooled one
+        // `solveDrawdown` actually used, with no drift or double-counting.
+        const costBasisShares = apportionByPriorBalance(priorBalances, returnOfCapital);
+        accountIds.giaAccountIds.forEach((id, i) => {
+          nextAccountBalances.set(id, subtractPence(priorBalances[i] ?? zeroPence(), balanceShares[i] ?? zeroPence()));
+          const priorCostBasis = nextCostBasisByAccountId.get(id) ?? zeroPence();
+          nextCostBasisByAccountId.set(id, subtractPence(priorCostBasis, costBasisShares[i] ?? zeroPence()));
+        });
       }
     };
 
@@ -852,10 +1064,9 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         // Household drawdown optimisation (SPEC.md §5.7.4) — which person
         // draws which bucket first is itself part of the optimisation,
         // since Personal Allowance/band headroom/allowances are all
-        // per-person. Each person's own accounts are auto-discovered
-        // (never the config's `pensionAccountId` etc., which are only
-        // meaningful for a person-scoped target) — a joint target draws
-        // from whatever pension/ISA each person individually holds, plus
+        // per-person. Each person's own accounts are auto-discovered and
+        // pooled (`discoverAccountIds`) — a joint target draws from
+        // whatever pension/ISA each person individually holds, plus
         // either person's own or a shared cash/GIA.
         const eligiblePeople = pass2aResults.filter((p) => drawdownAccumulators.has(p.pass1.person.id));
         const accountIdsByPerson = new Map(eligiblePeople.map((p) => [p.pass1.person.id, discoverAccountIds(p.pass1.person.id)]));
@@ -889,10 +1100,9 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
 
         for (const { id: personId, result } of householdResult.perPerson) {
           const accountIds = accountIdsByPerson.get(personId) ?? discoverAccountIds(personId);
-          const balances = balancesFor(accountIds);
-          creditAccountsAfterDrawdown(accountIds, balances, result);
+          creditAccountsAfterDrawdown(accountIds, result);
           nextLumpSumAllowanceUsed.set(personId, addPence(nextLumpSumAllowanceUsed.get(personId) ?? zeroPence(), result.lumpSumAllowanceUsed));
-          applyDrawdownResultToAccumulator(personId, result);
+          applyDrawdownResultToAccumulator(personId, result, accountIds);
         }
         continue;
       }
@@ -901,7 +1111,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       const accumulator = drawdownAccumulators.get(source.owner);
       if (!pass2a || !accumulator) continue;
 
-      const accountIds = discoverConfiguredAccountIds(config);
+      const accountIds = discoverAccountIds(source.owner);
       const balances = balancesFor(accountIds);
       const lumpSumAllowanceRemaining = subtractPence(prepared.pensions.lumpSumAllowance, nextLumpSumAllowanceUsed.get(source.owner) ?? zeroPence());
 
@@ -914,9 +1124,27 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         ...balances,
       });
 
-      creditAccountsAfterDrawdown(accountIds, balances, result);
+      creditAccountsAfterDrawdown(accountIds, result);
       nextLumpSumAllowanceUsed.set(source.owner, addPence(nextLumpSumAllowanceUsed.get(source.owner) ?? zeroPence(), result.lumpSumAllowanceUsed));
-      applyDrawdownResultToAccumulator(source.owner, result);
+      applyDrawdownResultToAccumulator(source.owner, result, accountIds);
+    }
+
+    // --- MPAA trigger detection (SPEC.md §5.4) ------------------------------
+    // Now that this year's drawdown has run, check whether any *taxable*
+    // pension income was taken — the taxable-band buckets are pension-
+    // specific (see `bucketForBandName`/`taxCategoryForBucket` in
+    // solveDrawdown.ts; a GIA/cash/ISA withdrawal never lands in one of
+    // these). Taking only the tax-free UFPLS lump-sum share doesn't
+    // trigger MPAA on its own — only a nonzero taxable bucket does, since
+    // that's what "flexible access" actually means under HMRC rules. Feeds
+    // *next* year's Pass 1/2a via `mpaaTriggeredPersonIds` below, never
+    // this same year's (already-finalised) Annual Allowance.
+    const nextMpaaTriggeredPersonIds = new Set(mpaaTriggeredPersonIds);
+    for (const [personId, accumulator] of drawdownAccumulators) {
+      const tookTaxablePensionIncome = (
+        ["taxablePersonalAllowance", "taxableBasicRate", "taxableHigherRate", "taxableAdditionalRate"] as const
+      ).some((bucket) => (accumulator.bucketTotals.get(bucket)?.amount ?? zeroPence()) > 0);
+      if (tookTaxablePensionIncome) nextMpaaTriggeredPersonIds.add(personId);
     }
 
     // --- Pass 2b: dividends/interest onward, per person, using the
@@ -933,6 +1161,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       const propertySaleNetProceeds = pass2a.propertySaleNetProceeds;
       const nationalInsurance = pass2a.nationalInsurance;
       const annualAllowanceCharge = pass2a.annualAllowanceCharge;
+      const mpaaActive = pass2a.mpaaActive;
 
       const accumulator = drawdownAccumulators.get(person.id);
       const drawdownGrossWithdrawn = accumulator?.grossWithdrawn ?? zeroPence();
@@ -982,17 +1211,22 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       // (step 3 already folded rental profit's *tax* into `incomeTax`
       // above); property sale net proceeds are already net of any CGT
       // due, mirroring how `taxFreeIncome` adds in with no further tax
-      // effect (SPEC.md §3.8).
+      // effect (SPEC.md §3.8). `accountContributions` is subtracted here
+      // too — a pension/ISA/GIA/cash contribution drain already directed
+      // that money into an account, so it must come off spendable cash
+      // the same way `otherExpenses` does, or the surplus sweep below
+      // would treat it as still-unallocated and invest it a second time.
       const netIncome = subtractPence(
         sumPence([
           pass1.grossIncome,
           pass1.rentalProfitIncome,
+          pass1.statePensionIncome,
           drawdownNetAchieved,
           pass1.taxFreeIncome,
           pass1.mortgageInterestCredit,
           propertySaleNetProceeds,
         ]),
-        sumPence([incomeTax, nationalInsurance, annualAllowanceCharge, pass1.otherExpenses, savingsTax, dividendTax]),
+        sumPence([incomeTax, nationalInsurance, annualAllowanceCharge, pass1.otherExpenses, pass1.accountContributions, savingsTax, dividendTax]),
       );
 
       // 6c. Surplus cash sweep: any positive net income not otherwise
@@ -1007,11 +1241,39 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       //     all if they hold neither. Computed from this year's
       //     already-final net income, so swept money starts earning
       //     interest/dividends from next year, not this one.
+      //
+      //     Never sweeps into an account `touchedAccountIds` (above) says
+      //     this year's drawdown already drew a nonzero amount from —
+      //     otherwise, an achieved-but-unspent drawdown (no matching
+      //     living-expenses drain to actually consume it) gets reinvested
+      //     right back into the very account it just came from, silently
+      //     undoing the withdrawal every single year: a real bug this
+      //     specifically prevents, caught from a user report of an
+      //     ISA-only, drawdown-only scenario whose ISA balance never fell
+      //     even though the drawdown target exceeded it. A *different*
+      //     ISA/GIA of the same kind is still a perfectly good sweep
+      //     target — this only skips the exact account(s) just drawn from.
+      //
+      //     Also suppressed entirely while this person has an active,
+      //     *unmet* drawdown target this year (`drawdownShortfall`) — a
+      //     real bug this prevents: automatic income that isn't reduced
+      //     by the drawdown target (state pension, rental profit — a
+      //     documented v1 gap, SPEC.md §5.7.2) can leave positive net
+      //     income even during a genuine shortfall (e.g. state pension
+      //     alone, once a linked account has been exhausted). Sweeping
+      //     that into an emptied account, only to have next year's
+      //     drawdown immediately draw it straight back out again,
+      //     produced a caught live bug: net income oscillating between
+      //     two values year over year instead of ever settling near the
+      //     actual target — there's no genuine "surplus" to invest while
+      //     the target itself isn't being met.
       let surplusSweptToIsa = zeroPence();
       let surplusSweptToGia = zeroPence();
-      if (netIncome > 0) {
+      if (netIncome > 0 && !drawdownShortfall) {
         let surplusLeft = netIncome;
-        const isaAccount = scenario.accounts.find((a): a is IsaAccount => a.kind === "isa" && a.owner === person.id);
+        const isaAccount = scenario.accounts.find(
+          (a): a is IsaAccount => a.kind === "isa" && a.owner === person.id && !accumulator?.touchedAccountIds.has(a.id),
+        );
         if (isaAccount) {
           const isaRoomRemaining = maxPence(subtractPence(prepared.isa.annualSubscriptionLimit, pass1.isaContributionsThisYear), zeroPence());
           surplusSweptToIsa = minPence(surplusLeft, isaRoomRemaining);
@@ -1023,7 +1285,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         }
         if (surplusLeft > 0) {
           const giaAccount = scenario.accounts.find(
-            (a): a is GiaAccount => a.kind === "gia" && (a.owner === person.id || a.owner === "joint"),
+            (a): a is GiaAccount => a.kind === "gia" && (a.owner === person.id || a.owner === "joint") && !accumulator?.touchedAccountIds.has(a.id),
           );
           if (giaAccount) {
             surplusSweptToGia = surplusLeft;
@@ -1036,6 +1298,85 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         }
       }
 
+      // 6d. If net income is negative (outgoings exceeded income this
+      //     year), automatically fund the shortfall from this person's
+      //     own liquid accounts — cash first, then ISA, then GIA — the
+      //     surplus sweep above run in reverse. Deliberately never touches
+      //     a pension: unlike cash/ISA/GIA, a pension has a legal minimum
+      //     access age, so an ordinary outgoing can't be assumed to be
+      //     allowed to draw one (only an explicit `TargetDrawdownIncome`
+      //     income source, which the user opts into, draws a pension).
+      //     `netIncome` itself is deliberately left unchanged by this —
+      //     it's a pure cash-flow figure (income minus spending); this is
+      //     only the resulting balance-sheet effect of covering it. For a
+      //     joint account, whichever person is processed first (their
+      //     order in `household.people`) draws from it first — the same
+      //     order-dependent simplification the surplus sweep above and
+      //     other cross-person shared-balance mechanics in this engine
+      //     already accept, not a fairness split like the household
+      //     drawdown optimiser's.
+      let shortfallFundedFromSavings = zeroPence();
+      let shortfallCapitalGainsTax = zeroPence();
+      let livingExpensesShortfall = false;
+      if (netIncome < 0) {
+        let shortfallRemaining = subtractPence(zeroPence(), netIncome);
+
+        const cashAccount = scenario.accounts.find(
+          (a): a is CashAccount => a.kind === "cash" && (a.owner === person.id || a.owner === "joint"),
+        );
+        if (cashAccount && shortfallRemaining > 0) {
+          const currentBalance = nextAccountBalances.get(cashAccount.id) ?? zeroPence();
+          const drawn = minPence(shortfallRemaining, currentBalance);
+          if (drawn > 0) {
+            nextAccountBalances.set(cashAccount.id, subtractPence(currentBalance, drawn));
+            shortfallFundedFromSavings = addPence(shortfallFundedFromSavings, drawn);
+            shortfallRemaining = subtractPence(shortfallRemaining, drawn);
+          }
+        }
+
+        const shortfallIsaAccount = scenario.accounts.find((a): a is IsaAccount => a.kind === "isa" && a.owner === person.id);
+        if (shortfallIsaAccount && shortfallRemaining > 0) {
+          const currentBalance = nextAccountBalances.get(shortfallIsaAccount.id) ?? zeroPence();
+          const drawn = minPence(shortfallRemaining, currentBalance);
+          if (drawn > 0) {
+            nextAccountBalances.set(shortfallIsaAccount.id, subtractPence(currentBalance, drawn));
+            shortfallFundedFromSavings = addPence(shortfallFundedFromSavings, drawn);
+            shortfallRemaining = subtractPence(shortfallRemaining, drawn);
+          }
+        }
+
+        const shortfallGiaAccount = scenario.accounts.find(
+          (a): a is GiaAccount => a.kind === "gia" && (a.owner === person.id || a.owner === "joint"),
+        );
+        if (shortfallGiaAccount && shortfallRemaining > 0) {
+          const currentBalance = nextAccountBalances.get(shortfallGiaAccount.id) ?? zeroPence();
+          const drawn = minPence(shortfallRemaining, currentBalance);
+          if (drawn > 0) {
+            const currentCostBasis = nextCostBasisByAccountId.get(shortfallGiaAccount.id) ?? zeroPence();
+            const { returnOfCapitalAmount, gainAmount } = splitGiaWithdrawal(drawn, currentCostBasis, currentBalance);
+            nextAccountBalances.set(shortfallGiaAccount.id, subtractPence(currentBalance, drawn));
+            nextCostBasisByAccountId.set(shortfallGiaAccount.id, subtractPence(currentCostBasis, returnOfCapitalAmount));
+
+            if (gainAmount > 0 && accumulator) {
+              shortfallCapitalGainsTax = calculateCapitalGainsTax(
+                taxableIncomeSoFarForBands,
+                gainAmount,
+                accumulator.capitalGainsExemptAmountRemaining,
+                fullBands,
+                prepared.capitalGainsTax,
+              );
+              const exemptAmountUsed = minPence(gainAmount, accumulator.capitalGainsExemptAmountRemaining);
+              accumulator.capitalGainsExemptAmountRemaining = subtractPence(accumulator.capitalGainsExemptAmountRemaining, exemptAmountUsed);
+            }
+
+            shortfallFundedFromSavings = addPence(shortfallFundedFromSavings, drawn);
+            shortfallRemaining = subtractPence(shortfallRemaining, drawn);
+          }
+        }
+
+        livingExpensesShortfall = shortfallRemaining > 0;
+      }
+
       return {
         personId: person.id,
         grossIncome: pass1.grossIncome,
@@ -1043,12 +1384,14 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         grossPensionContribution: pass1.grossPensionContribution,
         pensionInputAmount: pass1.pensionInputAmount,
         annualAllowanceCharge,
+        mpaaActive,
         incomeTax,
         incomeTaxByBand,
         marriageAllowanceGiven: marriageAllowanceGiven.get(person.id) ?? zeroPence(),
         marriageAllowanceReceived: marriageAllowanceReceived.get(person.id) ?? zeroPence(),
         nationalInsurance,
         otherExpenses: pass1.otherExpenses,
+        accountContributions: pass1.accountContributions,
         drawdownGrossWithdrawn,
         drawdownIncomeTax,
         drawdownCapitalGainsTax,
@@ -1060,6 +1403,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         drawdownShortfall,
         drawdownBuckets,
         rentalProfitIncome: pass1.rentalProfitIncome,
+        statePensionIncome: pass1.statePensionIncome,
         mortgageInterestCredit: pass1.mortgageInterestCredit,
         propertySaleGain,
         propertySaleCapitalGainsTax,
@@ -1068,6 +1412,9 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         netIncome,
         surplusSweptToIsa,
         surplusSweptToGia,
+        shortfallFundedFromSavings,
+        shortfallCapitalGainsTax,
+        livingExpensesShortfall,
       };
     });
 
@@ -1087,6 +1434,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
     costBasisByAccountId = nextCostBasisByAccountId;
     nominalMortgageBalanceByPropertyId = nextNominalMortgageBalanceByPropertyId;
     carryForwardWindows = nextCarryForwardWindows;
+    mpaaTriggeredPersonIds = nextMpaaTriggeredPersonIds;
     rows.push({
       taxYear,
       calendarYear,
@@ -1118,6 +1466,7 @@ export function totalTaxForYear(row: YearLedgerRow): Pence {
       p.savingsTax,
       p.dividendTax,
       p.propertySaleCapitalGainsTax,
+      p.shortfallCapitalGainsTax,
       subtractPence(zeroPence(), p.mortgageInterestCredit),
     ]),
   );

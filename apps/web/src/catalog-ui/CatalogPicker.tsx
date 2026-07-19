@@ -4,6 +4,8 @@ import { Button, Menu, Stack, Text } from "@mantine/core";
 export interface CatalogPickerProps {
   readonly kind: "source" | "drain";
   readonly onSelect: (type: string) => void;
+  /** Registry types to hide from this picker — e.g. `targetDrawdownIncome`, which has its own permanent, always-present section instead of being picked from here (SPEC.md §5.7.1's "the most important input" is promoted out of the generic optional-extras list). */
+  readonly excludeTypes?: readonly string[];
 }
 
 /**
@@ -12,9 +14,10 @@ export interface CatalogPickerProps {
  * updating when a new catalog type is added in a later phase (SPEC.md
  * §9.4).
  */
-export function CatalogPicker({ kind, onSelect }: CatalogPickerProps) {
-  const definitions: readonly (IncomeSourceDefinition<unknown> | IncomeDrainDefinition<unknown>)[] =
-    kind === "source" ? registry.listIncomeSources() : registry.listIncomeDrains();
+export function CatalogPicker({ kind, onSelect, excludeTypes = [] }: CatalogPickerProps) {
+  const definitions: readonly (IncomeSourceDefinition<unknown> | IncomeDrainDefinition<unknown>)[] = (
+    kind === "source" ? registry.listIncomeSources() : registry.listIncomeDrains()
+  ).filter((def) => !excludeTypes.includes(def.type));
 
   return (
     <Menu shadow="md" position="bottom-start">

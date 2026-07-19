@@ -1,4 +1,4 @@
-import { addPence, penceToPounds, type Pence, type ProjectionResult } from "@fp/engine";
+import { addPence, penceToPounds, sumPence, type Pence, type ProjectionResult } from "@fp/engine";
 import { computeNetWorth } from "./projection.js";
 
 const COLUMNS = [
@@ -6,6 +6,7 @@ const COLUMNS = [
   "Person",
   "Gross income",
   "Rental profit",
+  "State Pension income",
   "Drawdown net achieved",
   "Income Tax",
   "National Insurance",
@@ -15,6 +16,7 @@ const COLUMNS = [
   "Annual Allowance charge",
   "Mortgage interest credit",
   "Property sale net proceeds",
+  "Shortfall funded from savings",
   "Net income",
   "Household net worth",
 ] as const;
@@ -54,15 +56,17 @@ export function projectionToCsv(result: ProjectionResult): string {
           label,
           money(person.grossIncome),
           money(person.rentalProfitIncome),
+          money(person.statePensionIncome),
           money(person.drawdownNetAchieved),
           money(addPence(person.incomeTax, person.drawdownIncomeTax)),
           money(person.nationalInsurance),
-          money(addPence(person.drawdownCapitalGainsTax, person.propertySaleCapitalGainsTax)),
+          money(sumPence([person.drawdownCapitalGainsTax, person.propertySaleCapitalGainsTax, person.shortfallCapitalGainsTax])),
           money(person.dividendTax),
           money(person.savingsTax),
           money(person.annualAllowanceCharge),
           money(person.mortgageInterestCredit),
           money(person.propertySaleNetProceeds),
+          money(person.shortfallFundedFromSavings),
           money(person.netIncome),
           netWorth,
         ]

@@ -19,14 +19,6 @@ export interface TargetDrawdownIncomeConfig {
   readonly startAge: number;
   /** Optional — e.g. a step-down at State Pension age is modelled as a second instance starting where this one ends. */
   readonly endAge?: number;
-  /** The pension account this target draws from, if any (v1 scope: at most one). Ignored for a joint target — see `simulation/runProjection.ts`'s account auto-discovery. */
-  readonly pensionAccountId?: string;
-  /** The ISA account this target draws from, if any (v1 scope: at most one). Ignored for a joint target. */
-  readonly isaAccountId?: string;
-  /** The cash account this target draws from, if any (v1 scope: at most one). Ignored for a joint target. */
-  readonly cashAccountId?: string;
-  /** The GIA this target draws from, if any (v1 scope: at most one). Ignored for a joint target. */
-  readonly giaAccountId?: string;
   /** Only meaningful for a jointly-owned target (SPEC.md §5.7.4) — how the combined target is split between the two people. Defaults to `"optimised"` if omitted. */
   readonly householdSplitStrategy?: HouseholdDrawdownSplitStrategy;
   /** Only used when `householdSplitStrategy` is `"custom"` — the first household member's share of the target, as a 0-1 fraction (SPEC.md §9.6's "percentage" input convention: stored as a fraction, displayed as %). */
@@ -37,10 +29,6 @@ const fields: readonly CatalogFieldSchema<TargetDrawdownIncomeConfig>[] = [
   { key: "targetNetAnnualIncome", label: "Target net annual income", input: "currency", required: true },
   { key: "startAge", label: "Starts at age", input: "age", required: true },
   { key: "endAge", label: "Ends at age", input: "age", required: false },
-  { key: "pensionAccountId", label: "Pension account to draw from", input: "select", required: false },
-  { key: "isaAccountId", label: "ISA account to draw from", input: "select", required: false },
-  { key: "cashAccountId", label: "Cash account to draw from", input: "select", required: false },
-  { key: "giaAccountId", label: "GIA to draw from", input: "select", required: false },
   {
     key: "householdSplitStrategy",
     label: "How to split between you",
@@ -65,13 +53,6 @@ function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly Valida
       message: "Target net annual income cannot be negative.",
     });
   }
-
-  // Not checked here whether *no* account is selected (unlike earlier
-  // versions of this type): a joint target auto-discovers each person's
-  // own accounts (SPEC.md §5.7.4) rather than requiring explicit
-  // selection, and `validate` has no way to see this instance's own
-  // `owner` to distinguish the two cases (SPEC.md §9.4's plugin
-  // signature is deliberately owner-agnostic here).
 
   if (config.endAge !== undefined && config.endAge <= config.startAge) {
     issues.push({
@@ -133,7 +114,8 @@ function calculateForYear(
 export const targetDrawdownIncomeDefinition: IncomeSourceDefinition<TargetDrawdownIncomeConfig> = {
   type: "targetDrawdownIncome",
   displayName: "Drawdown income target",
-  description: "How much net income you want to draw each year in retirement — the engine works out the most tax-efficient mix of pension and ISA withdrawals to hit it",
+  description:
+    "How much net income you want to draw each year in retirement — the engine pools every pension, ISA, cash, and GIA account this applies to and works out the most tax-efficient mix of withdrawals to hit it",
   taxCategory: "pensionIncome",
   fields,
   validate,

@@ -21,6 +21,8 @@ export interface PreparedYearRules {
   readonly nationalInsurance: NationalInsuranceThresholds;
   readonly pensions: {
     readonly annualAllowance: Pence;
+    /** The reduced Annual Allowance for money-purchase (DC) pension contributions once a person has flexibly accessed a pension (SPEC.md §5.4) — a flat cap, not itself tapered further by income. */
+    readonly moneyPurchaseAnnualAllowance: Pence;
     readonly taperThresholdIncome: Pence;
     readonly taperThresholdAdjustedIncome: Pence;
     readonly taperMinimumAllowance: Pence;
@@ -96,6 +98,7 @@ export function prepareRuleSetForScenario(
     },
     pensions: {
       annualAllowance: uprate(confirmedRuleSet.pensions.annualAllowance),
+      moneyPurchaseAnnualAllowance: uprate(confirmedRuleSet.pensions.moneyPurchaseAnnualAllowance),
       taperThresholdIncome: uprate(confirmedRuleSet.pensions.taperThresholdIncome),
       taperThresholdAdjustedIncome: uprate(confirmedRuleSet.pensions.taperThresholdAdjustedIncome),
       taperMinimumAllowance: uprate(confirmedRuleSet.pensions.taperMinimumAllowance),

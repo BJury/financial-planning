@@ -8,7 +8,7 @@ import { useScenarioStore } from "../state/store.js";
  * "Save to file" / "Open from file" (SPEC.md §9.2) — the secondary,
  * not-optional persistence path alongside autosave: the only way a plan
  * survives clearing browser data, moving to a new device, or leaving
- * private/incognito mode. Shared by Onboarding and Dashboard so it's
+ * private/incognito mode. Lives in the main planner's header so it's
  * reachable from wherever the user happens to be, per §9.2's "not left
  * undiscovered as a menu item."
  */
@@ -38,9 +38,9 @@ export function PlanFileControls() {
     setImportError(null);
     setScenario(result.scenario);
     // Recalculated fresh against the app's current tax rules on load
-    // (SPEC.md §9.2) — jumping straight to the projection shows that
+    // (SPEC.md §9.2) — landing back on the main planner view shows that
     // recalculation immediately, rather than leaving the user to guess.
-    void navigate("/dashboard");
+    void navigate("/");
   };
 
   return (

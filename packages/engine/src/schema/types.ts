@@ -31,7 +31,31 @@ export interface Person {
    */
   readonly targetRetirementAge: number;
   readonly projectionEndAge: number;
+  /**
+   * When this person's State Pension can first be claimed (SPEC.md §3.3,
+   * §5.7) — genuinely read by the simulation loop, unlike
+   * `targetRetirementAge`: it gates the `statePension` catalog source's
+   * `isActive` check, and NI stops accruing on any other income from this
+   * age onward too (§5.3). SPEC.md's own wording calls for this to be
+   * "computed from date of birth per the relevant SPA timetable" — the
+   * UK's actual SPA timetable is a multi-decade schedule of transitional
+   * birth-date bands, not a single formula, and reproducing it is out of
+   * v1 scope; a plain per-person input (defaulting to
+   * `DEFAULT_STATE_PENSION_AGE` in the UI) is a deliberate simplification
+   * consistent with SPEC.md §1.1's "directionally trustworthy, not
+   * penny-perfect" goal — the same gov.uk forecast page SPEC.md already
+   * recommends as the primary source for the pension *amount* also states
+   * the person's own actual SPA directly. Optional (not required, unlike
+   * `targetRetirementAge`) specifically so every existing `Person` value
+   * across this codebase's tests/persisted scenarios keeps typechecking
+   * without modification — `DEFAULT_STATE_PENSION_AGE` is the engine's
+   * own fallback wherever this is read, not just a UI nicety.
+   */
+  readonly statePensionAge?: number;
 }
+
+/** The UI's default when adding a person, and the engine's own fallback wherever `Person.statePensionAge` is absent (SPEC.md §3.3). */
+export const DEFAULT_STATE_PENSION_AGE = 67;
 
 /**
  * Deliberately `people: readonly Person[]`, never a singular `person`

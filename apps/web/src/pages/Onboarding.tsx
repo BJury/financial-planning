@@ -1,7 +1,9 @@
 import {
   convertNominalToReal,
   convertRealToNominal,
+  DEFAULT_STATE_PENSION_AGE,
   deriveAnnualRepaymentMortgagePayment,
+  getLatestConfirmedRuleSet,
   pence,
   penceToPounds,
   personId,
@@ -20,13 +22,15 @@ import {
   type Property,
   type Scenario,
 } from "@fp/engine";
-import { ActionIcon, Button, Card, Group, NumberInput, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
-import { useState } from "react";
-import { useNavigate } from "react-router";
+import { ActionIcon, AppShell, Burger, Button, Card, Group, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
+import { useDisclosure } from "@mantine/hooks";
+import { useEffect, useMemo, useState } from "react";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
 import { CatalogPicker } from "../catalog-ui/CatalogPicker.js";
+import { AgeOrDateInput, isoDateFromAge } from "../components/AgeOrDateInput.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
+import { ProjectionResults } from "../components/ProjectionResults.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
@@ -141,12 +145,31 @@ function createDefaultConfig(fields: readonly CatalogFieldSchema<unknown>[]): Re
   return config;
 }
 
+/**
+ * The drawdown income target is the single most important input in the
+ * whole plan (SPEC.md §5.7.1) — how much someone actually wants to live
+ * on, which the engine works backwards from to decide the tax-efficient
+ * pension/ISA/GIA/cash withdrawal mix. It's seeded here, always, rather
+ * than left for the user to discover in the generic "+ Add income
+ * source" picker — still exactly the same `targetDrawdownIncome` catalog
+ * type under the hood (SPEC.md §9.4), just always present with a £0
+ * default (a no-op until filled in) instead of opt-in.
+ */
+function createDefaultDrawdownTarget(): IncomeSourceInstance {
+  const definition = registry.getIncomeSource("targetDrawdownIncome");
+  const config = createDefaultConfig(definition.fields);
+  config.startAge = DEFAULT_TARGET_RETIREMENT_AGE;
+  return { id: generateId("drawdown-target"), type: "targetDrawdownIncome", owner: PERSON_ID, config };
+}
+
 interface OnboardingDrafts {
   readonly dateOfBirth: string;
+  readonly statePensionAge: number;
   readonly inflationRate: number;
   /** Whether the household has a second person (SPEC.md §3.1) — everything below is only meaningful when this is true. */
   readonly hasSecondPerson: boolean;
   readonly personBDateOfBirth: string;
+  readonly personBStatePensionAge: number;
   readonly relationshipStatus: Household["relationshipStatus"];
   readonly marriageAllowanceElection: PersonId | undefined;
   readonly pensionAccounts: readonly PensionAccountDraft[];
@@ -154,6 +177,8 @@ interface OnboardingDrafts {
   readonly giaAccounts: readonly GiaAccountDraft[];
   readonly cashAccounts: readonly CashAccountDraft[];
   readonly properties: readonly PropertyAccountDraft[];
+  /** Always exactly one — see `createDefaultDrawdownTarget`. */
+  readonly drawdownTarget: IncomeSourceInstance;
   readonly incomeSources: readonly IncomeSourceInstance[];
   readonly incomeDrains: readonly IncomeDrainInstance[];
 }
@@ -170,9 +195,11 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
   if (!scenario) {
     return {
       dateOfBirth: "",
+      statePensionAge: DEFAULT_STATE_PENSION_AGE,
       inflationRate: DEFAULT_INFLATION_RATE,
       hasSecondPerson: false,
       personBDateOfBirth: "",
+      personBStatePensionAge: DEFAULT_STATE_PENSION_AGE,
       relationshipStatus: null,
       marriageAllowanceElection: undefined,
       pensionAccounts: [],
@@ -180,18 +207,27 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       giaAccounts: [],
       cashAccounts: [],
       properties: [],
+      drawdownTarget: createDefaultDrawdownTarget(),
       incomeSources: [],
       incomeDrains: [],
     };
   }
 
   const [personA, personB] = scenario.household.people;
+  // If a loaded plan somehow has more than one (e.g. hand-edited, or from
+  // before this became a single permanent input), only the first is kept
+  // as "the" managed target — a deliberate v1 simplification rather than
+  // building UI for multiple targets, matching this section's own "always
+  // exactly one" design.
+  const existingDrawdownTarget = scenario.incomeSources.find((s) => s.type === "targetDrawdownIncome");
 
   return {
     dateOfBirth: personA?.dateOfBirth ?? "",
+    statePensionAge: personA?.statePensionAge ?? DEFAULT_STATE_PENSION_AGE,
     inflationRate: scenario.inflationRate,
     hasSecondPerson: personB !== undefined,
     personBDateOfBirth: personB?.dateOfBirth ?? "",
+    personBStatePensionAge: personB?.statePensionAge ?? DEFAULT_STATE_PENSION_AGE,
     relationshipStatus: scenario.household.relationshipStatus,
     marriageAllowanceElection: scenario.household.marriageAllowanceElection,
     pensionAccounts: scenario.accounts
@@ -244,24 +280,27 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
         expectedSalePrice: a.plannedSale?.expectedSalePrice ? penceToPounds(a.plannedSale.expectedSalePrice) : 0,
         sellingCosts: a.plannedSale ? penceToPounds(a.plannedSale.sellingCosts) : 0,
       })),
-    incomeSources: scenario.incomeSources,
+    drawdownTarget: existingDrawdownTarget ?? createDefaultDrawdownTarget(),
+    incomeSources: scenario.incomeSources.filter((s) => s.type !== "targetDrawdownIncome"),
     incomeDrains: scenario.incomeDrains,
   };
 }
 
 /**
- * Phase 1's onboarding/plan editor (SPEC.md §4 journey 1): nothing is
- * mandatory except a date of birth. Accounts and every cash flow are
- * added one at a time from a catalog picker (SPEC.md §3.11, §9.4) and
- * can be removed just as freely — there is no fixed "fill in this form"
- * structure. Re-entering this page with an existing plan (§4 journey 1's
- * "returning visit... offers Edit plan") hydrates every field below from
- * it, rather than starting blank.
+ * The plan editor (SPEC.md §4 journey 1) and results pane, side by
+ * side: nothing is mandatory except a date of birth. Accounts and every
+ * cash flow are added one at a time from a catalog picker (SPEC.md
+ * §3.11, §9.4) and can be removed just as freely — there is no fixed
+ * "fill in this form" structure, and no separate submit step — every
+ * edit here recomputes the projection shown in the main area
+ * immediately (`liveScenario` below). Re-entering this page with an
+ * existing plan hydrates every field below from it, rather than
+ * starting blank.
  */
 export function Onboarding() {
-  const navigate = useNavigate();
   const setScenario = useScenarioStore((s) => s.setScenario);
   const existingScenario = useScenarioStore((s) => s.scenario);
+  const [navOpened, { toggle: toggleNav }] = useDisclosure();
 
   // Computed once, from whatever was in the store at mount time — by the
   // time this page can be reached, App's initial hydration (§9.2) has
@@ -270,9 +309,11 @@ export function Onboarding() {
   const [initial] = useState(() => draftsFromScenario(existingScenario));
 
   const [dateOfBirth, setDateOfBirth] = useState(initial.dateOfBirth);
+  const [statePensionAge, setStatePensionAge] = useState(initial.statePensionAge);
   const [inflationRate, setInflationRate] = useState(initial.inflationRate);
   const [hasSecondPerson, setHasSecondPerson] = useState(initial.hasSecondPerson);
   const [personBDateOfBirth, setPersonBDateOfBirth] = useState(initial.personBDateOfBirth);
+  const [personBStatePensionAge, setPersonBStatePensionAge] = useState(initial.personBStatePensionAge);
   const [relationshipStatus, setRelationshipStatus] = useState<Household["relationshipStatus"]>(initial.relationshipStatus);
   const [marriageAllowanceElection, setMarriageAllowanceElection] = useState<PersonId | undefined>(initial.marriageAllowanceElection);
   const [pensionAccounts, setPensionAccounts] = useState<PensionAccountDraft[]>([...initial.pensionAccounts]);
@@ -280,17 +321,33 @@ export function Onboarding() {
   const [giaAccounts, setGiaAccounts] = useState<GiaAccountDraft[]>([...initial.giaAccounts]);
   const [cashAccounts, setCashAccounts] = useState<CashAccountDraft[]>([...initial.cashAccounts]);
   const [properties, setProperties] = useState<PropertyAccountDraft[]>([...initial.properties]);
+  const [drawdownTarget, setDrawdownTarget] = useState<IncomeSourceInstance>(initial.drawdownTarget);
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
 
   const addIncomeSource = (type: string) => {
     const definition = registry.getIncomeSource(type);
     const config = createDefaultConfig(definition.fields);
-    // A drawdown target's start age defaults, in the UI, to the person's
-    // target retirement age (SPEC.md §5.7.1) — Phase 1 hardcodes that age
-    // (see handleSubmit below) since it isn't yet a separate user input.
-    if ("startAge" in config && type === "targetDrawdownIncome") config.startAge = DEFAULT_TARGET_RETIREMENT_AGE;
-    setIncomeSources((prev) => [...prev, { id: generateId("src"), type, owner: PERSON_ID, config }]);
+    // The full new State Pension amount (SPEC.md §3.3, §6.1) — a starting
+    // point for anyone who doesn't yet have their own gov.uk forecast to
+    // hand, not a substitute for it (most people qualify for less than
+    // the full amount). Still just the UI's own default value, not the
+    // "estimate from qualifying years" formula SPEC.md §3.3 separately
+    // describes — that formula remains a documented, deferred v1 gap.
+    if ("annualForecastAmount" in config && type === "statePension") {
+      const { fullWeeklyAmount } = getLatestConfirmedRuleSet().statePension;
+      config.annualForecastAmount = poundsToPence(fullWeeklyAmount * 52);
+    }
+    // Defaults State Pension's own "Starts on" scheduling field to this
+    // person's own State Pension age (itself defaulting to 67) — shown in
+    // Age mode by `CatalogInstanceCard`'s `defaultMode` prop, so it reads
+    // as "67" rather than a birthday date. Technically redundant with the
+    // catalog type's own age-gating (`Person.statePensionAge`, which
+    // already stops it before that age regardless), but makes the default
+    // visible directly on the card instead of only implied elsewhere on
+    // the page. No-op if no date of birth is set yet.
+    const startDate = type === "statePension" && dateOfBirth ? isoDateFromAge(dateOfBirth, statePensionAge) : undefined;
+    setIncomeSources((prev) => [...prev, { id: generateId("src"), type, owner: PERSON_ID, config, ...(startDate ? { startDate } : {}) }]);
   };
 
   const addIncomeDrain = (type: string) => {
@@ -301,12 +358,20 @@ export function Onboarding() {
 
   const canSubmit = dateOfBirth.length > 0 && (!hasSecondPerson || personBDateOfBirth.length > 0);
 
-  const handleSubmit = () => {
+  const buildScenario = (): Scenario => {
     const household: Household = {
       people: [
-        { id: PERSON_ID, dateOfBirth, targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE, projectionEndAge: 95 },
+        { id: PERSON_ID, dateOfBirth, targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE, projectionEndAge: 95, statePensionAge },
         ...(hasSecondPerson
-          ? [{ id: PERSON_B_ID, dateOfBirth: personBDateOfBirth, targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE, projectionEndAge: 95 }]
+          ? [
+              {
+                id: PERSON_B_ID,
+                dateOfBirth: personBDateOfBirth,
+                targetRetirementAge: DEFAULT_TARGET_RETIREMENT_AGE,
+                projectionEndAge: 95,
+                statePensionAge: personBStatePensionAge,
+              },
+            ]
           : []),
       ],
       relationshipStatus: hasSecondPerson ? relationshipStatus : null,
@@ -394,38 +459,82 @@ export function Onboarding() {
         : {}),
     }));
 
-    const scenario: Scenario = {
+    return {
       schemaVersion: 1,
       household,
       accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities, ...propertyEntities],
-      incomeSources,
+      incomeSources: [drawdownTarget, ...incomeSources],
       incomeDrains,
       inflationRate,
       upratingPolicy: { kind: "inflationLinked" },
     };
-
-    setScenario(scenario);
-    void navigate("/dashboard");
   };
 
-  return (
-    <Stack maw={560} mx="auto" my="xl" gap="xl">
-      <Group justify="space-between">
-        <Title order={2}>Your plan</Title>
-        <Group gap="xs">
-          <PlanFileControls />
-          <ColorSchemeToggle />
-        </Group>
-      </Group>
+  // Recomputed on every edit (no separate "submit" step) — `canSubmit`
+  // and every piece of state `buildScenario` reads from are the
+  // dependencies, so this only produces a new Scenario when something
+  // the user actually changed. Pushed to the shared store below, which
+  // is what both `ProjectionResults` (this page's main area) and the
+  // Tax Breakdown page read from.
+  const liveScenario = useMemo(
+    () => (canSubmit ? buildScenario() : null),
+    [
+      canSubmit,
+      dateOfBirth,
+      statePensionAge,
+      inflationRate,
+      hasSecondPerson,
+      personBDateOfBirth,
+      personBStatePensionAge,
+      relationshipStatus,
+      marriageAllowanceElection,
+      pensionAccounts,
+      isaAccounts,
+      giaAccounts,
+      cashAccounts,
+      properties,
+      drawdownTarget,
+      incomeSources,
+      incomeDrains,
+    ],
+  );
 
-      <Stack gap="sm">
-        <Title order={4}>About you</Title>
+  useEffect(() => {
+    if (liveScenario) setScenario(liveScenario);
+  }, [liveScenario, setScenario]);
+
+  return (
+    <AppShell header={{ height: 56 }} navbar={{ width: 460, breakpoint: "sm", collapsed: { mobile: !navOpened } }} padding="md">
+      <AppShell.Header>
+        <Group h="100%" px="md" justify="space-between">
+          <Group gap="sm">
+            <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
+            <Title order={3}>Your plan</Title>
+          </Group>
+          <Group gap="xs">
+            <PlanFileControls />
+            <ColorSchemeToggle />
+          </Group>
+        </Group>
+      </AppShell.Header>
+
+      <AppShell.Navbar p="md">
+        <ScrollArea>
+          <Stack gap="xl" pb="xl">
+            <Stack gap="sm">
+              <Title order={4}>About you</Title>
         <TextInput
           type="date"
           label="Date of birth"
           required
           value={dateOfBirth}
           onChange={(e) => setDateOfBirth(e.currentTarget.value)}
+        />
+        <NumberInput
+          label="State Pension age"
+          description="From gov.uk's 'Check your State Pension forecast' page, if you know it — defaults to 67 otherwise (SPEC.md §3.3)"
+          value={statePensionAge}
+          onChange={(v) => setStatePensionAge(typeof v === "number" ? v : DEFAULT_STATE_PENSION_AGE)}
         />
       </Stack>
 
@@ -445,6 +554,12 @@ export function Onboarding() {
               required
               value={personBDateOfBirth}
               onChange={(e) => setPersonBDateOfBirth(e.currentTarget.value)}
+            />
+            <NumberInput
+              label="Their State Pension age"
+              description="Defaults to 67 if you don't know it (SPEC.md §3.3)"
+              value={personBStatePensionAge}
+              onChange={(v) => setPersonBStatePensionAge(typeof v === "number" ? v : DEFAULT_STATE_PENSION_AGE)}
             />
             <Select
               label="Relationship status"
@@ -484,6 +599,17 @@ export function Onboarding() {
           onChange={(v) => setInflationRate(typeof v === "number" ? v / 100 : 0)}
         />
       </Stack>
+
+      <DrawdownTargetSection
+        instance={drawdownTarget}
+        pensionAccounts={pensionAccounts}
+        isaAccounts={isaAccounts}
+        giaAccounts={giaAccounts}
+        cashAccounts={cashAccounts}
+        hasSecondPerson={hasSecondPerson}
+        inflationRate={inflationRate}
+        onChange={setDrawdownTarget}
+      />
 
       <Stack gap="sm">
         <Title order={4}>Accounts</Title>
@@ -538,6 +664,8 @@ export function Onboarding() {
             property={property}
             inflationRate={inflationRate}
             hasSecondPerson={hasSecondPerson}
+            dateOfBirth={dateOfBirth}
+            personBDateOfBirth={personBDateOfBirth}
             onChange={(updated) => setProperties((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setProperties((prev) => prev.filter((a) => a.id !== property.id))}
           />
@@ -644,11 +772,13 @@ export function Onboarding() {
             properties={properties}
             hasSecondPerson={hasSecondPerson}
             inflationRate={inflationRate}
+            dateOfBirth={dateOfBirth}
+            personBDateOfBirth={personBDateOfBirth}
             onChange={(updated) => setIncomeSources((prev) => prev.map((s) => (s.id === updated.id ? (updated as IncomeSourceInstance) : s)))}
             onRemove={() => setIncomeSources((prev) => prev.filter((s) => s.id !== source.id))}
           />
         ))}
-        <CatalogPicker kind="source" onSelect={addIncomeSource} />
+        <CatalogPicker kind="source" onSelect={addIncomeSource} excludeTypes={["targetDrawdownIncome"]} />
       </Stack>
 
       <Stack gap="sm">
@@ -668,17 +798,22 @@ export function Onboarding() {
             properties={properties}
             hasSecondPerson={hasSecondPerson}
             inflationRate={inflationRate}
+            dateOfBirth={dateOfBirth}
+            personBDateOfBirth={personBDateOfBirth}
             onChange={(updated) => setIncomeDrains((prev) => prev.map((d) => (d.id === updated.id ? (updated as IncomeDrainInstance) : d)))}
             onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
           />
         ))}
-        <CatalogPicker kind="drain" onSelect={addIncomeDrain} />
-      </Stack>
+            <CatalogPicker kind="drain" onSelect={addIncomeDrain} />
+            </Stack>
+          </Stack>
+        </ScrollArea>
+      </AppShell.Navbar>
 
-      <Button onClick={handleSubmit} size="md" disabled={!canSubmit}>
-        See my projection
-      </Button>
-    </Stack>
+      <AppShell.Main>
+        <ProjectionResults scenario={liveScenario} />
+      </AppShell.Main>
+    </AppShell>
   );
 }
 
@@ -729,6 +864,87 @@ function OwnerSelect({ owner, allowJoint, onChange }: { readonly owner: Owner; r
       value={owner}
       onChange={(v) => onChange((v === PERSON_B_ID || (allowJoint && v === "joint") ? v : PERSON_ID) as Owner)}
     />
+  );
+}
+
+/**
+ * The drawdown income target — how much someone actually wants to live
+ * on — is the single most important input in the whole plan (SPEC.md
+ * §5.7.1): every other figure in the results pane is really just "can
+ * this number actually be sustained." Given its own permanent section
+ * above Accounts, rather than being one option among many in the
+ * generic "+ Add income source" picker where it previously read as an
+ * optional extra. There is always exactly one instance (never added or
+ * removed here, unlike every other catalog-backed section on this
+ * page) — still the same `targetDrawdownIncome` catalog type/engine
+ * mechanics underneath (SPEC.md §9.4), spliced back into
+ * `Scenario.incomeSources` in `buildScenario`.
+ */
+function DrawdownTargetSection({
+  instance,
+  pensionAccounts,
+  isaAccounts,
+  giaAccounts,
+  cashAccounts,
+  hasSecondPerson,
+  inflationRate,
+  onChange,
+}: {
+  readonly instance: IncomeSourceInstance;
+  readonly pensionAccounts: readonly PensionAccountDraft[];
+  readonly isaAccounts: readonly IsaAccountDraft[];
+  readonly giaAccounts: readonly GiaAccountDraft[];
+  readonly cashAccounts: readonly CashAccountDraft[];
+  readonly hasSecondPerson: boolean;
+  readonly inflationRate: number;
+  readonly onChange: (instance: IncomeSourceInstance) => void;
+}) {
+  const definition = registry.getIncomeSource("targetDrawdownIncome");
+  const isJoint = instance.owner === "joint";
+
+  // Every pension/ISA/cash/GIA this instance can reach is pooled and
+  // drawn from automatically — there's no account-picker field to filter
+  // in or out any more (`simulation/runProjection.ts`'s `discoverAccountIds`
+  // does the discovery). Household-split-strategy fields only apply to a
+  // joint target, and `customFirstPersonShare` only once "custom" is picked.
+  const fields = definition.fields.filter((field) => {
+    const splitStrategyFields = ["householdSplitStrategy", "customFirstPersonShare"];
+    if (!isJoint && splitStrategyFields.includes(field.key)) return false;
+    if (field.key === "customFirstPersonShare") {
+      const config = instance.config as { readonly householdSplitStrategy?: string };
+      return config.householdSplitStrategy === "custom";
+    }
+    return true;
+  });
+
+  const hasAnyAccount = pensionAccounts.length > 0 || isaAccounts.length > 0 || giaAccounts.length > 0 || cashAccounts.length > 0;
+
+  return (
+    <Stack gap="sm">
+      <Title order={4}>Retirement income target</Title>
+      <Text size="sm" c="dimmed">
+        The most important number in this plan — how much you actually want to live on each year. The engine works
+        backwards from this to find the most tax-efficient mix of withdrawals from the accounts you add below.
+      </Text>
+      {hasSecondPerson && <OwnerSelect owner={instance.owner} allowJoint onChange={(owner) => onChange({ ...instance, owner })} />}
+      {isJoint && (
+        <Text size="xs" c="dimmed">
+          Draws from each of your own pension/ISA, and either of your cash/GIA accounts, automatically — the engine
+          works out the most tax-efficient split between you (SPEC.md §5.7.4).
+        </Text>
+      )}
+      {!hasAnyAccount && (
+        <Text size="sm" c="orange.7">
+          Add an account below for this to actually have something to draw from.
+        </Text>
+      )}
+      <CatalogItemForm
+        fields={fields}
+        value={instance.config as Record<string, unknown>}
+        inflationRate={inflationRate}
+        onChange={(config) => onChange({ ...instance, config })}
+      />
+    </Stack>
   );
 }
 
@@ -945,15 +1161,20 @@ function PropertyAccountCard({
   property,
   inflationRate,
   hasSecondPerson,
+  dateOfBirth,
+  personBDateOfBirth,
   onChange,
   onRemove,
 }: {
   readonly property: PropertyAccountDraft;
   readonly inflationRate: number;
   readonly hasSecondPerson: boolean;
+  readonly dateOfBirth: string;
+  readonly personBDateOfBirth: string;
   readonly onChange: (property: PropertyAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
+  const ownerDob = property.owner === "joint" ? undefined : (property.owner === PERSON_B_ID ? personBDateOfBirth : dateOfBirth) || undefined;
   const suggestedPayment =
     property.mortgageRepaymentType === "repayment"
       ? penceToPounds(
@@ -1007,12 +1228,12 @@ function PropertyAccountCard({
             value={property.purchasePrice}
             onChange={(v) => onChange({ ...property, purchasePrice: typeof v === "number" ? v : 0 })}
           />
-          <TextInput
-            type="date"
+          <AgeOrDateInput
             label="Purchase date"
             description="Used as the CGT cost basis if this is ever sold"
             value={property.purchaseDate}
-            onChange={(e) => onChange({ ...property, purchaseDate: e.currentTarget.value })}
+            dateOfBirth={ownerDob}
+            onChange={(v) => onChange({ ...property, purchaseDate: v })}
           />
         </Group>
 
@@ -1125,11 +1346,11 @@ function PropertyAccountCard({
               Planned sale
             </Text>
             <Stack gap="sm">
-              <TextInput
-                type="date"
+              <AgeOrDateInput
                 label="Sale date"
                 value={property.saleDate}
-                onChange={(e) => onChange({ ...property, saleDate: e.currentTarget.value })}
+                dateOfBirth={ownerDob}
+                onChange={(v) => onChange({ ...property, saleDate: v })}
               />
               <NumberInput
                 label="Expected sale price"
@@ -1164,8 +1385,8 @@ function PropertyAccountCard({
  * contribution funds) is resolved here, from the currently-added
  * accounts, rather than baked into the catalog type itself.
  */
-/** Catalog types that can only ever be owned by a specific person, never jointly (SPEC.md §3.2, §3.4, §3.5). `targetDrawdownIncome` is deliberately not here — a jointly-owned target is household-combined drawdown optimisation (SPEC.md §5.7.4). */
-const PERSON_ONLY_CATALOG_TYPES = new Set(["salary", "pensionContribution", "isaContribution"]);
+/** Catalog types that can only ever be owned by a specific person, never jointly (SPEC.md §3.2, §3.3, §3.4, §3.5 — State Pension is explicitly per-person, calculated from each person's own NI record, with no joint/shared State Pension in the UK system at all). */
+const PERSON_ONLY_CATALOG_TYPES = new Set(["salary", "pensionContribution", "isaContribution", "statePension"]);
 
 function CatalogInstanceCard({
   instance,
@@ -1177,6 +1398,8 @@ function CatalogInstanceCard({
   properties,
   hasSecondPerson,
   inflationRate,
+  dateOfBirth,
+  personBDateOfBirth,
   onChange,
   onRemove,
 }: {
@@ -1189,32 +1412,17 @@ function CatalogInstanceCard({
   readonly properties: readonly PropertyAccountDraft[];
   readonly hasSecondPerson: boolean;
   readonly inflationRate: number;
+  readonly dateOfBirth: string;
+  readonly personBDateOfBirth: string;
   readonly onChange: (instance: IncomeSourceInstance | IncomeDrainInstance) => void;
   readonly onRemove: () => void;
 }) {
   const definition = kind === "source" ? registry.getIncomeSource(instance.type) : registry.getIncomeDrain(instance.type);
+  const ownerDob = instance.owner === "joint" ? undefined : (instance.owner === PERSON_B_ID ? personBDateOfBirth : dateOfBirth) || undefined;
   const rentalProperties = properties.filter((p) => p.propertyType === "rental");
   const allowJointOwner = !PERSON_ONLY_CATALOG_TYPES.has(instance.type);
 
-  // A jointly-owned drawdown target auto-discovers each person's own
-  // accounts rather than requiring explicit selection (SPEC.md §5.7.4) —
-  // the account-picker fields are meaningless for it, and conversely the
-  // split-strategy fields are meaningless for a target scoped to one
-  // specific person.
-  const isJointDrawdownTarget = instance.type === "targetDrawdownIncome" && instance.owner === "joint";
   const fields = definition.fields
-    .filter((field) => {
-      if (instance.type !== "targetDrawdownIncome") return true;
-      const accountPickerFields = ["pensionAccountId", "isaAccountId", "cashAccountId", "giaAccountId"];
-      const splitStrategyFields = ["householdSplitStrategy", "customFirstPersonShare"];
-      if (isJointDrawdownTarget && accountPickerFields.includes(field.key)) return false;
-      if (!isJointDrawdownTarget && splitStrategyFields.includes(field.key)) return false;
-      if (field.key === "customFirstPersonShare") {
-        const config = instance.config as { readonly householdSplitStrategy?: string };
-        return config.householdSplitStrategy === "custom";
-      }
-      return true;
-    })
     .map((field) => {
       if (field.key === "pensionAccountId") {
         return { ...field, options: pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${a.currentBalance.toLocaleString()})` })) };
@@ -1232,6 +1440,20 @@ function CatalogInstanceCard({
         // Mortgage payments can be linked to any property; rental income only to a rental one.
         const options = instance.type === "rentalIncome" ? rentalProperties : properties;
         return { ...field, options: options.map((a) => ({ value: a.id, label: `${a.propertyType === "rental" ? "Rental" : "Main residence"} (£${a.currentBalance.toLocaleString()})` })) };
+      }
+      if (field.key === "destinationAccountId") {
+        // A one-off inflow's optional ISA/GIA/cash destination — one
+        // combined picker rather than separate account-id fields, since
+        // it's a single either/or choice (SPEC.md §3.9), unlike a
+        // drawdown target's several independent account links.
+        return {
+          ...field,
+          options: [
+            ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })),
+            ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })),
+            ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })),
+          ],
+        };
       }
       return field;
     });
@@ -1292,34 +1514,33 @@ function CatalogInstanceCard({
       {hasSecondPerson && (
         <OwnerSelect owner={instance.owner} allowJoint={allowJointOwner} onChange={(owner) => onChange({ ...instance, owner })} />
       )}
-      {isJointDrawdownTarget && (
-        <Text size="xs" c="dimmed" mb="xs">
-          Draws from each of your own pension/ISA, and either of your cash/GIA accounts, automatically — the engine
-          works out the most tax-efficient split between you (SPEC.md §5.7.4).
-        </Text>
-      )}
       <CatalogItemForm
         fields={fields}
         value={instance.config as Record<string, unknown>}
         inflationRate={inflationRate}
+        {...(ownerDob !== undefined ? { dateOfBirth: ownerDob } : {})}
         onChange={(config) => onChange({ ...instance, config })}
       />
-      <Group grow mt="sm">
-        <TextInput
-          type="date"
-          label="Starts on"
-          description="Leave blank to start immediately"
-          value={instance.startDate ?? ""}
-          onChange={(e) => setStartDate(e.currentTarget.value)}
-        />
-        <TextInput
-          type="date"
-          label="Ends on"
-          description="Leave blank for no end date"
-          value={instance.endDate ?? ""}
-          onChange={(e) => setEndDate(e.currentTarget.value)}
-        />
-      </Group>
+      {/* A one-off inflow/outflow already has its own required, single "Date" field above (SPEC.md §3.9) — a start/end *range* on top of that is meaningless for a single dated event, and confusingly duplicated the word "Date" on the same card (the segmented control's own "Date"/"Age" option labels collided with it). */}
+      {instance.type !== "oneOffInflow" && instance.type !== "oneOffOutflow" && (
+        <Group grow mt="sm">
+          <AgeOrDateInput
+            label="Starts on"
+            description="Leave blank to start immediately"
+            value={instance.startDate ?? ""}
+            dateOfBirth={ownerDob}
+            defaultMode={instance.type === "statePension" ? "age" : "date"}
+            onChange={setStartDate}
+          />
+          <AgeOrDateInput
+            label="Ends on"
+            description="Leave blank for no end date"
+            value={instance.endDate ?? ""}
+            dateOfBirth={ownerDob}
+            onChange={setEndDate}
+          />
+        </Group>
+      )}
     </Card>
   );
 }

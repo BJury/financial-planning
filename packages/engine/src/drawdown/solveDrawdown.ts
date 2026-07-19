@@ -15,14 +15,21 @@ export interface DrawdownSolverInputs {
    * `computeRemainingBandHeadroom` in tax/incomeTax.ts.
    */
   readonly bandHeadroom: readonly RemainingBandHeadroom[];
-  /** Balance of a single uncrystallised pension account (v1 scope: one pension per person). */
+  /**
+   * Uncrystallised pension balance — the *pooled* total across every
+   * pension account this draw applies to, not necessarily just one
+   * (`simulation/runProjection.ts` sums a person's own pension accounts
+   * before calling this and apportions the resulting withdrawal back
+   * across them pro-rata by balance; this solver itself only ever deals
+   * in a single scalar).
+   */
   readonly pensionBalance: Pence;
   readonly lumpSumAllowanceRemaining: Pence;
-  /** Balance of a single ISA account (v1 scope: one ISA per person). */
+  /** Pooled ISA balance — see `pensionBalance`'s note on pooling. */
   readonly isaBalance: Pence;
-  /** Balance of a single cash account (v1 scope: one cash account per person). */
+  /** Pooled cash balance — see `pensionBalance`'s note on pooling. */
   readonly cashBalance: Pence;
-  /** Balance of a single GIA (v1 scope: one GIA per person). */
+  /** Pooled GIA balance — see `pensionBalance`'s note on pooling. */
   readonly giaBalance: Pence;
   readonly giaCostBasis: Pence;
   /** This person's remaining CGT Annual Exempt Amount for the year — an *annual* allowance (unlike the LSA), so callers never carry this across years. */
@@ -101,10 +108,9 @@ function cgtRateForBand(bandName: string, rates: CapitalGainsRates): number {
  * correct in the common case (UFPLS's guaranteed 25% tax-free share
  * usually wins), but not perfectly optimal in every edge case.
  *
- * v1 scope: one account of each type per person (matching the schema
- * today) — property, household-combined optimisation (SPEC.md §5.7.4),
- * and the "crystallise fully at retirement" pot override aren't
- * supported yet.
+ * Operates on already-pooled balances (see `pensionBalance`'s doc
+ * comment) — property, and the "crystallise fully at retirement" pot
+ * override aren't supported yet.
  */
 export function solveDrawdown(inputs: DrawdownSolverInputs): DrawdownSolverResult {
   let remainingNet = inputs.targetNetAmount;

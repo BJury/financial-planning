@@ -13,9 +13,9 @@ export function projectionYearsFor(scenario: Scenario, startCalendarYear: number
 
 /**
  * The single computation every page that shows projection results calls
- * — Dashboard and the tax breakdown view must always be looking at
- * exactly the same numbers, since cross-checking one against the other
- * is the whole point of the tax breakdown view.
+ * — the results pane and the tax breakdown view must always be looking
+ * at exactly the same numbers, since cross-checking one against the
+ * other is the whole point of the tax breakdown view.
  */
 export function computeProjection(scenario: Scenario): ProjectionResult {
   const confirmedRuleSet = getLatestConfirmedRuleSet();

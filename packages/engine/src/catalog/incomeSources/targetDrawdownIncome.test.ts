@@ -30,7 +30,6 @@ describe("targetDrawdownIncomeDefinition.isActive", () => {
   const baseConfig: TargetDrawdownIncomeConfig = {
     targetNetAnnualIncome: poundsToPence(30000),
     startAge: 67,
-    pensionAccountId: "pension1",
   };
 
   it("is inactive before the start age", () => {
@@ -63,34 +62,19 @@ describe("targetDrawdownIncomeDefinition.isActive", () => {
 });
 
 describe("targetDrawdownIncomeDefinition.validate", () => {
-  it("has no issues for a normal, fully-specified target", () => {
-    const config: TargetDrawdownIncomeConfig = {
-      targetNetAnnualIncome: poundsToPence(30000),
-      startAge: 67,
-      pensionAccountId: "pension1",
-      isaAccountId: "isa1",
-    };
-    expect(targetDrawdownIncomeDefinition.validate(config)).toEqual([]);
-  });
-
-  it("hard-blocks a negative target", () => {
-    const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: pence(-100), startAge: 67, pensionAccountId: "pension1" };
-    const issues = targetDrawdownIncomeDefinition.validate(config);
-    expect(issues.some((i) => i.field === "targetNetAnnualIncome" && i.tier === "hardBlock")).toBe(true);
-  });
-
-  it("has no issues with no account selected at all — a valid, auto-discovering joint target (SPEC.md §5.7.4)", () => {
+  it("has no issues for a normal target — accounts are auto-discovered and pooled, never picked in config (SPEC.md §5.7.1)", () => {
     const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: poundsToPence(30000), startAge: 67 };
     expect(targetDrawdownIncomeDefinition.validate(config)).toEqual([]);
   });
 
+  it("hard-blocks a negative target", () => {
+    const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: pence(-100), startAge: 67 };
+    const issues = targetDrawdownIncomeDefinition.validate(config);
+    expect(issues.some((i) => i.field === "targetNetAnnualIncome" && i.tier === "hardBlock")).toBe(true);
+  });
+
   it("hard-blocks an end age that isn't after the start age", () => {
-    const config: TargetDrawdownIncomeConfig = {
-      targetNetAnnualIncome: poundsToPence(30000),
-      startAge: 67,
-      endAge: 67,
-      pensionAccountId: "pension1",
-    };
+    const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: poundsToPence(30000), startAge: 67, endAge: 67 };
     const issues = targetDrawdownIncomeDefinition.validate(config);
     expect(issues.some((i) => i.field === "endAge" && i.tier === "hardBlock")).toBe(true);
   });

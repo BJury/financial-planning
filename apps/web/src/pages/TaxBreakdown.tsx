@@ -107,7 +107,7 @@ export function TaxBreakdown() {
         <Title order={2}>Tax breakdown</Title>
         <Group gap="xs">
           <PlanFileControls />
-          <Button variant="subtle" onClick={() => void navigate("/dashboard")}>
+          <Button variant="subtle" onClick={() => void navigate("/")}>
             Back to projection
           </Button>
           <ColorSchemeToggle />
@@ -173,6 +173,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
       person.savingsTax,
       person.dividendTax,
       person.propertySaleCapitalGainsTax,
+      person.shortfallCapitalGainsTax,
     ]),
     person.mortgageInterestCredit,
   );
@@ -227,7 +228,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
         </Section>
       )}
 
-      {(person.grossPensionContribution > 0 || person.pensionInputAmount > 0 || person.annualAllowanceCharge > 0) && (
+      {(person.grossPensionContribution > 0 || person.pensionInputAmount > 0 || person.annualAllowanceCharge > 0 || person.mpaaActive) && (
         <Section title="Pension relief and Annual Allowance">
           {person.grossPensionContribution > 0 && (
             <KeyValue
@@ -237,11 +238,20 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
             />
           )}
           <KeyValue label="Total pension input this year (the Annual Allowance test figure)" amount={person.pensionInputAmount} />
+          {person.mpaaActive && (
+            <Text size="sm" c="orange.7">
+              ⚠ Money Purchase Annual Allowance (MPAA) active — you flexibly accessed a pension in a previous year, so contributions to any of your pensions are now capped at a lower allowance, with no carry-forward available against it.
+            </Text>
+          )}
           {person.annualAllowanceCharge > 0 && (
             <KeyValue
               label="Annual Allowance charge"
               amount={person.annualAllowanceCharge}
-              description="Contributions exceeded the available Annual Allowance (including any carried-forward headroom) — the excess is charged back at your marginal rate."
+              description={
+                person.mpaaActive
+                  ? "Contributions exceeded the (MPAA-capped) Annual Allowance — the excess is charged back at your marginal rate."
+                  : "Contributions exceeded the available Annual Allowance (including any carried-forward headroom) — the excess is charged back at your marginal rate."
+              }
             />
           )}
         </Section>
@@ -261,6 +271,16 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
               <KeyValue label="Tax on dividends (via the Dividend Allowance)" amount={person.dividendTax} />
             </>
           )}
+        </Section>
+      )}
+
+      {person.statePensionIncome > 0 && (
+        <Section title="State Pension">
+          <KeyValue
+            label="State Pension income"
+            amount={person.statePensionIncome}
+            description="Paid gross — already included in the Income Tax bands above, taxed at your marginal rate alongside earned/pension income, but never subject to National Insurance."
+          />
         </Section>
       )}
 
@@ -331,17 +351,45 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
         </Section>
       )}
 
-      {(person.taxFreeIncome > 0 || person.otherExpenses > 0 || person.surplusSweptToIsa > 0 || person.surplusSweptToGia > 0) && (
+      {(person.taxFreeIncome > 0 ||
+        person.otherExpenses > 0 ||
+        person.accountContributions > 0 ||
+        person.surplusSweptToIsa > 0 ||
+        person.surplusSweptToGia > 0 ||
+        person.shortfallFundedFromSavings > 0 ||
+        person.livingExpensesShortfall) && (
         <Section title="Other cash flows">
           {person.taxFreeIncome > 0 && <KeyValue label="Tax-free income (e.g. a one-off inheritance)" amount={person.taxFreeIncome} />}
           {person.otherExpenses > 0 && (
             <KeyValue label="Living expenses, mortgage payments, and one-off outflows" amount={person.otherExpenses} />
+          )}
+          {person.accountContributions > 0 && (
+            <KeyValue
+              label="Pension/ISA/GIA/cash contributions from your own pocket"
+              amount={person.accountContributions}
+              description="What you personally paid in — a relief-at-source pension's basic-rate top-up isn't counted here, since that's not your own money."
+            />
           )}
           {person.surplusSweptToIsa > 0 && (
             <KeyValue label="Surplus cash swept into the ISA" amount={person.surplusSweptToIsa} />
           )}
           {person.surplusSweptToGia > 0 && (
             <KeyValue label="Surplus cash swept into the GIA" amount={person.surplusSweptToGia} />
+          )}
+          {person.shortfallFundedFromSavings > 0 && (
+            <KeyValue
+              label="Shortfall funded from cash/ISA/GIA savings"
+              amount={person.shortfallFundedFromSavings}
+              description="Outgoings exceeded income this year, so this was drawn from your own liquid savings (cash first, then ISA, then GIA) to cover it — never a pension."
+            />
+          )}
+          {person.shortfallCapitalGainsTax > 0 && (
+            <KeyValue label="CGT on the GIA portion of that shortfall" amount={person.shortfallCapitalGainsTax} />
+          )}
+          {person.livingExpensesShortfall && (
+            <Text size="sm" c="orange.7">
+              ⚠ Outgoings exceed income and available cash/ISA/GIA savings this year — the shortfall isn&rsquo;t fully covered.
+            </Text>
           )}
         </Section>
       )}

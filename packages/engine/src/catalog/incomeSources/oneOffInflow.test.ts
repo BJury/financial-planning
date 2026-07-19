@@ -33,6 +33,12 @@ describe("oneOffInflowDefinition.isActive", () => {
     expect(oneOffInflowDefinition.isActive(config, makeScenarioState(), yearContext(2030), PERSON_ID)).toBe(true);
     expect(oneOffInflowDefinition.isActive(config, makeScenarioState(), yearContext(2031), PERSON_ID)).toBe(false);
   });
+
+  it("is never active with the date left at its default empty string — a real bug this guards: an unparseable date used to make it active every single year, not none", () => {
+    const undatedConfig: OneOffInflowConfig = { amount: poundsToPence(5000), date: "", category: "other" };
+    expect(oneOffInflowDefinition.isActive(undatedConfig, makeScenarioState(), yearContext(2026), PERSON_ID)).toBe(false);
+    expect(oneOffInflowDefinition.isActive(undatedConfig, makeScenarioState(), yearContext(2050), PERSON_ID)).toBe(false);
+  });
 });
 
 describe("oneOffInflowDefinition.calculateForYear", () => {
