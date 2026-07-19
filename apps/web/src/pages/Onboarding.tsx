@@ -522,12 +522,20 @@ export function Onboarding() {
   }, [liveScenario, setScenario]);
 
   return (
-    <AppShell header={{ height: 56 }} navbar={{ width: 460, breakpoint: "sm", collapsed: { mobile: !navOpened } }} padding="md">
+    <AppShell
+      header={{ height: 56 }}
+      navbar={{ width: 460, breakpoint: "sm", collapsed: { mobile: !navOpened } }}
+      footer={{ height: 44 }}
+      padding="md"
+    >
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group gap="sm">
             <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
-            <Title order={3}>Your plan</Title>
+            <Title order={3}>Can I Stop</Title>
+            <Text c="dimmed" size="sm" visibleFrom="xs">
+              Your plan
+            </Text>
           </Group>
           <Group gap="xs">
             <PlanFileControls />
@@ -537,7 +545,7 @@ export function Onboarding() {
       </AppShell.Header>
 
       <AppShell.Navbar p="md">
-        <ScrollArea>
+        <ScrollArea offsetScrollbars="y">
           <Stack gap="xl" pb="xl">
             <Stack gap="sm">
               <Title order={4}>About you</Title>
@@ -872,6 +880,14 @@ export function Onboarding() {
       <AppShell.Main>
         <ProjectionResults scenario={liveScenario} />
       </AppShell.Main>
+
+      <AppShell.Footer>
+        <Group h="100%" px="md">
+          <Text c="dimmed" size="xs">
+            Figures are estimates from a personal project and may be wrong — don&rsquo;t rely on them as your only source for real financial decisions.
+          </Text>
+        </Group>
+      </AppShell.Footer>
     </AppShell>
   );
 }

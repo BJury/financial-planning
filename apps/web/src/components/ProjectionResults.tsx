@@ -659,7 +659,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           </Center>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
+            <LineChart data={chartData} margin={{ top: 24, right: 20, bottom: 10, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
               {shortfallRanges.map((r) => (
                 <ReferenceArea key={`shortfall:${r.start}`} x1={r.start} x2={r.end} fill="#e03131" fillOpacity={0.1} ifOverflow="extendDomain" />
