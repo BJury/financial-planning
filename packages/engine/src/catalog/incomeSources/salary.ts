@@ -1,5 +1,4 @@
 import { compoundPenceByRate, isNegative, type Pence } from "../../money/pence.js";
-import { ageAtYear } from "../../schema/age.js";
 import type { Owner } from "../../schema/types.js";
 import { registry } from "../registry.js";
 import type {
@@ -19,14 +18,11 @@ export interface SalaryConfig {
    * engine module never sees a nominal rate or an inflation figure.
    */
   readonly annualGrowthRate: number;
-  /** Optional — defaults (in the UI) from the owner's target retirement age (SPEC.md §3.2). */
-  readonly endAge?: number;
 }
 
 const fields: readonly CatalogFieldSchema<SalaryConfig>[] = [
   { key: "grossAnnualSalary", label: "Gross annual salary", input: "currency", required: true },
   { key: "annualGrowthRate", label: "Expected annual growth", input: "growthRate", required: true },
-  { key: "endAge", label: "Ends at age", input: "age", required: false },
 ];
 
 function validate(config: Readonly<SalaryConfig>): readonly ValidationIssue[] {
@@ -54,10 +50,7 @@ function validate(config: Readonly<SalaryConfig>): readonly ValidationIssue[] {
   return issues;
 }
 
-function isActive(config: Readonly<SalaryConfig>, _state: ScenarioState, yearContext: YearContext, owner: Owner): boolean {
-  if (config.endAge === undefined) {
-    return true;
-  }
+function isActive(_config: Readonly<SalaryConfig>, state: ScenarioState, _yearContext: YearContext, owner: Owner): boolean {
   if (owner === "joint") {
     // A Salary can never actually be owned jointly (SPEC.md §3.2 — salary
     // is always an individual Person's employment income), but the type
@@ -66,11 +59,7 @@ function isActive(config: Readonly<SalaryConfig>, _state: ScenarioState, yearCon
     // misconfiguration before it ever reaches calculateForYear/isActive.
     return false;
   }
-  const person = _state.scenario.household.people.find((p) => p.id === owner);
-  if (!person) {
-    return false;
-  }
-  return ageAtYear(person.dateOfBirth, yearContext.calendarYear) < config.endAge;
+  return state.scenario.household.people.some((p) => p.id === owner);
 }
 
 function calculateForYear(config: Readonly<SalaryConfig>, _state: ScenarioState, yearContext: YearContext, _owner: Owner) {

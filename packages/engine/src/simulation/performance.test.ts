@@ -89,8 +89,8 @@ function worstCaseScenario(): Scenario {
       },
     ],
     incomeSources: [
-      { id: "s1", type: "salary", owner: PERSON_A, config: { grossAnnualSalary: poundsToPence(60000), annualGrowthRate: 0.02, endAge: 60 } },
-      { id: "s2", type: "salary", owner: PERSON_B, config: { grossAnnualSalary: poundsToPence(55000), annualGrowthRate: 0.02, endAge: 60 } },
+      { id: "s1", type: "salary", owner: PERSON_A, config: { grossAnnualSalary: poundsToPence(60000), annualGrowthRate: 0.02 }, endDate: "2029-12-31" },
+      { id: "s2", type: "salary", owner: PERSON_B, config: { grossAnnualSalary: poundsToPence(55000), annualGrowthRate: 0.02 }, endDate: "2031-12-31" },
       { id: "s3", type: "rentalIncome", owner: PERSON_A, config: { propertyId: "prop2" } },
       { id: "s4", type: "oneOffInflow", owner: "joint", config: { amount: poundsToPence(50000), date: "2040-06-01", category: "inheritance" } },
       { id: "s5", type: "targetDrawdownIncome", owner: "joint", config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 60, householdSplitStrategy: "optimised" } },

@@ -59,24 +59,11 @@ describe("salaryDefinition.calculateForYear", () => {
 });
 
 describe("salaryDefinition.isActive", () => {
-  const config: SalaryConfig = { grossAnnualSalary: poundsToPence(50000), annualGrowthRate: 0.02, endAge: 67 };
+  const config: SalaryConfig = { grossAnnualSalary: poundsToPence(50000), annualGrowthRate: 0.02 };
 
-  it("is active with no endAge configured, regardless of age", () => {
-    const noEndAgeConfig: SalaryConfig = { grossAnnualSalary: poundsToPence(50000), annualGrowthRate: 0.02 };
+  it("is active for the owning person, regardless of age (age-based ending is handled by the generic start/end date scheduling)", () => {
     const state = makeScenarioState([person]);
-    expect(salaryDefinition.isActive(noEndAgeConfig, state, yearContext(2090, 64), PERSON_ID)).toBe(true);
-  });
-
-  it("is active before the configured end age", () => {
-    const state = makeScenarioState([person]);
-    // person born 1980, so in 2026 they are 46 — well before endAge 67
-    expect(salaryDefinition.isActive(config, state, yearContext(2026, 0), PERSON_ID)).toBe(true);
-  });
-
-  it("is inactive from the configured end age onward", () => {
-    const state = makeScenarioState([person]);
-    // in 2047 the person turns 67
-    expect(salaryDefinition.isActive(config, state, yearContext(2047, 21), PERSON_ID)).toBe(false);
+    expect(salaryDefinition.isActive(config, state, yearContext(2090, 64), PERSON_ID)).toBe(true);
   });
 
   it("is inactive for an owner of 'joint' (a Salary can never actually be jointly owned)", () => {
@@ -126,8 +113,6 @@ describe("salaryDefinition registry metadata", () => {
 
   it("has a field schema entry for every SalaryConfig field", () => {
     const keys = salaryDefinition.fields.map((f) => f.key);
-    expect(keys).toContain("grossAnnualSalary");
-    expect(keys).toContain("annualGrowthRate");
-    expect(keys).toContain("endAge");
+    expect(keys).toEqual(["grossAnnualSalary", "annualGrowthRate"]);
   });
 });

@@ -320,8 +320,9 @@ describe("runProjection — employer pension contributions", () => {
           id: "src1",
           type: "salary",
           owner: PERSON_ID,
-          // Person is 46 in 2026 and 47 in 2027 (born 1980); retires at 48, i.e. calendar year 2028 (yearIndex 2).
-          config: { grossAnnualSalary: poundsToPence(50000), annualGrowthRate: 0, endAge: 48 },
+          // Salary scheduled to end after 2027 — inactive from calendar year 2028 (yearIndex 2) onward.
+          config: { grossAnnualSalary: poundsToPence(50000), annualGrowthRate: 0 },
+          endDate: "2027-12-31",
         },
       ],
       incomeDrains: [],
@@ -435,37 +436,6 @@ describe("runProjection — income source start/end date scheduling", () => {
     }
   });
 
-  it("composes with a type's own isActive check — both must agree for income to count", () => {
-    // A salary with both a generic endDate and its own age-based endAge —
-    // whichever constraint bites first wins.
-    const person: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
-    const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
-
-    const scenario: Scenario = {
-      schemaVersion: 1,
-      household,
-      accounts: [],
-      incomeSources: [
-        {
-          id: "src1",
-          type: "salary",
-          owner: PERSON_ID,
-          config: { grossAnnualSalary: poundsToPence(12000), annualGrowthRate: 0, endAge: 50 }, // age 50 reached in calendar year 2030
-          endDate: "2050-12-31", // generic end date is far later — endAge should bite first
-        },
-      ],
-      incomeDrains: [],
-      inflationRate: 0.025,
-      upratingPolicy: { kind: "inflationLinked" },
-    };
-
-    const result = runProjection(scenario, ruleSet2026_27, 6); // 2026-2031
-    const grossIncomeByYear = result.rows.map((row) => row.perPerson[0]?.grossIncome ?? pence(0));
-    // Age 50 is reached in calendar year 2030 (yearIndex 4) — active up to and including yearIndex 3 (age 49).
-    expect(grossIncomeByYear[3]).toBe(poundsToPence(12000));
-    expect(grossIncomeByYear[4]).toBe(0);
-    expect(grossIncomeByYear[5]).toBe(0);
-  });
 });
 
 /** A retired person (already past a 65 start age in 2026) with a pension and an ISA, and a drawdown target funded from both — no growth/charges, to keep balance assertions exact. */

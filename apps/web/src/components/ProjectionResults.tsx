@@ -338,9 +338,27 @@ interface KeyFlag {
  * shortfall every year from age 80 onward) is one decision to revisit,
  * not dozens of identical lines.
  */
-function computeKeyFlags(result: ProjectionResult | null): readonly KeyFlag[] {
+function computeKeyFlags(result: ProjectionResult | null, scenario: Scenario | null): readonly KeyFlag[] {
   if (!result) return [];
   const flags: KeyFlag[] = [];
+  const firstTaxYear = result.rows[0]?.taxYear;
+
+  if (scenario && firstTaxYear) {
+    const { people } = scenario.household;
+    for (const person of people) {
+      const hasOwnIncome = scenario.incomeSources.some((source) => source.type !== "targetDrawdownIncome" && source.owner === person.id);
+      if (!hasOwnIncome) continue;
+      const isCoveredByTarget = scenario.incomeSources.some(
+        (source) => source.type === "targetDrawdownIncome" && (source.owner === person.id || source.owner === "joint"),
+      );
+      if (!isCoveredByTarget) {
+        flags.push({
+          taxYear: firstTaxYear,
+          message: `${ownerLabel(person.id, people)}'s income isn't covered by any drawdown target, so it won't be netted against a target's shortfall.`,
+        });
+      }
+    }
+  }
 
   const firstAnnualAllowanceYear = result.rows.find((row) => row.perPerson.some((p) => p.annualAllowanceCharge > 0));
   if (firstAnnualAllowanceYear) {
@@ -506,7 +524,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["netWorth"]);
 
   const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
-  const keyFlags = useMemo(() => computeKeyFlags(result), [result]);
+  const keyFlags = useMemo(() => computeKeyFlags(result, scenario), [result, scenario]);
   const chartEvents = useMemo(() => (scenario && result ? buildChartEvents(scenario, result) : []), [scenario, result]);
   const shortfallRanges = useMemo(() => (result ? computeShortfallRanges(result) : []), [result]);
   const accountMetrics = useMemo(() => (scenario ? buildAccountMetrics(scenario) : []), [scenario]);
