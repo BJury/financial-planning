@@ -160,12 +160,24 @@ export interface PersonYearResult {
   readonly statePensionIncome: Pence;
   /** This person's share of the flat-rate mortgage-interest tax credit on any rental property's mortgage (SPEC.md §5.6) — a reduction to the overall tax bill, kept separate from `incomeTax` so that figure still sums exactly from `incomeTaxByBand`. */
   readonly mortgageInterestCredit: Pence;
+  /** True if any of this person's properties sold this year — since a zero-gain sale whose entire proceeds were routed to a chosen destination account (`PlannedSale.destinationAccountId`) can otherwise look indistinguishable from "no sale happened" through the numeric fields below alone. */
+  readonly propertySaleOccurred: boolean;
   /** This person's ownership share of the gain on any property sold this year (SPEC.md §3.8, §5.6) — zero if no sale, or if Private Residence Relief exempted a main residence's gain. */
   readonly propertySaleGain: Pence;
   readonly propertySaleCapitalGainsTax: Pence;
   /** True if any property sold this year was a main residence and so had its gain fully exempted by Private Residence Relief (SPEC.md §5.6) — surfaced so the tax breakdown view can explain *why* no CGT was charged, rather than silently applying relief. */
   readonly propertySalePrivateResidenceReliefApplied: boolean;
-  /** This person's share of (sale price minus selling costs minus any mortgage redeemed minus their own CGT) — added to net income like a one-off inflow (SPEC.md §3.8). */
+  /**
+   * This person's share of (sale price minus selling costs minus any
+   * mortgage redeemed minus their own CGT) that's left *uncredited* to a
+   * chosen destination account — added to net income like a one-off
+   * inflow (SPEC.md §3.8). Whatever *was* credited to an ISA/GIA/cash
+   * account via `PlannedSale.destinationAccountId` shows up as a balance
+   * increase instead, the same way an `oneOffInflow`'s own
+   * `destinationAccountId` already works — so this can legitimately be
+   * zero even in a sale's own year; use `propertySaleOccurred` to detect
+   * that a sale happened at all.
+   */
   readonly propertySaleNetProceeds: Pence;
   /** Earned-income net plus any drawdown net achieved — the person's total spendable cash for the year. */
   readonly netIncome: Pence;
@@ -783,15 +795,27 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       //     redeemed from proceeds in full, a whole-year-granularity
       //     simplification.
       let capitalGainsExemptAmountRemaining = prepared.capitalGainsTax.annualExemptAmount;
+      let propertySaleOccurred = false;
       let propertySaleGain = zeroPence();
       let propertySaleCapitalGainsTax = zeroPence();
       let propertySalePrivateResidenceReliefApplied = false;
       let propertySaleNetProceeds = zeroPence();
+      // Accounts a property-sale destination has actually credited this
+      // person this year — fed into the drawdown accumulator's own
+      // `touchedAccountIds` below (6c's surplus sweep already respects
+      // that set to avoid reinvesting into an account another mechanism
+      // just used), so a sale's chosen ISA can't *also* receive the
+      // automatic surplus sweep past its annual limit. Only needed for
+      // this loop's own multi-property, same-ISA case below — GIA/cash
+      // have no cap, so double-crediting them isn't a correctness risk.
+      const propertySaleTouchedAccountIds = new Set<string>();
+      let isaCreditedThisPersonYearFromSales = zeroPence();
       for (const property of scenario.accounts.filter(isProperty)) {
         if ((property.owner !== person.id && property.owner !== "joint") || !property.plannedSale) continue;
         const saleYear = new Date(property.plannedSale.saleDate).getUTCFullYear();
         if (saleYear !== yearContext.calendarYear) continue;
 
+        propertySaleOccurred = true;
         const currentValue = nextAccountBalances.get(property.id) ?? property.currentBalance;
         const salePrice = property.plannedSale.expectedSalePrice ?? currentValue;
         const sellingCosts = property.plannedSale.sellingCosts;
@@ -818,7 +842,62 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
 
         propertySaleGain = addPence(propertySaleGain, gainShare);
         propertySaleCapitalGainsTax = addPence(propertySaleCapitalGainsTax, cgt);
-        propertySaleNetProceeds = addPence(propertySaleNetProceeds, subtractPence(netProceedsBeforeCgtShare, cgt));
+
+        // Route this person's share of the net proceeds to their chosen
+        // destination, if any and if it's actually reachable by them (a
+        // jointly-held property's `destinationAccountId` pointing at one
+        // owner's sole ISA only ever credits that owner's own share —
+        // the other owner's share still falls through to `else` below,
+        // same as if no destination were set at all). Whatever isn't
+        // credited — the whole share if unset/unreachable, or an ISA's
+        // overflow once GIA and cash both come up empty too — still
+        // becomes ordinary net income exactly as before this field
+        // existed.
+        let proceedsShareRemaining = subtractPence(netProceedsBeforeCgtShare, cgt);
+        const destinationAccount = property.plannedSale.destinationAccountId
+          ? scenario.accounts.find((a) => a.id === property.plannedSale?.destinationAccountId)
+          : undefined;
+        if (destinationAccount?.kind === "isa" && destinationAccount.owner === person.id) {
+          const roomRemaining = maxPence(
+            subtractPence(prepared.isa.annualSubscriptionLimit, addPence(pass1.isaContributionsThisYear, isaCreditedThisPersonYearFromSales)),
+            zeroPence(),
+          );
+          const credited = minPence(proceedsShareRemaining, roomRemaining);
+          if (credited > 0) {
+            nextAccountBalances.set(destinationAccount.id, addPence(nextAccountBalances.get(destinationAccount.id) ?? zeroPence(), credited));
+            isaCreditedThisPersonYearFromSales = addPence(isaCreditedThisPersonYearFromSales, credited);
+            propertySaleTouchedAccountIds.add(destinationAccount.id);
+            proceedsShareRemaining = subtractPence(proceedsShareRemaining, credited);
+          }
+          if (proceedsShareRemaining > 0) {
+            const fallbackGia = scenario.accounts.find(
+              (a): a is GiaAccount => a.kind === "gia" && (a.owner === person.id || a.owner === "joint"),
+            );
+            if (fallbackGia) {
+              nextAccountBalances.set(fallbackGia.id, addPence(nextAccountBalances.get(fallbackGia.id) ?? zeroPence(), proceedsShareRemaining));
+              nextCostBasisByAccountId.set(fallbackGia.id, addPence(nextCostBasisByAccountId.get(fallbackGia.id) ?? zeroPence(), proceedsShareRemaining));
+              proceedsShareRemaining = zeroPence();
+            } else {
+              const fallbackCash = scenario.accounts.find(
+                (a): a is CashAccount => a.kind === "cash" && (a.owner === person.id || a.owner === "joint"),
+              );
+              if (fallbackCash) {
+                nextAccountBalances.set(fallbackCash.id, addPence(nextAccountBalances.get(fallbackCash.id) ?? zeroPence(), proceedsShareRemaining));
+                proceedsShareRemaining = zeroPence();
+              }
+            }
+          }
+        } else if (destinationAccount?.kind === "gia" && (destinationAccount.owner === person.id || destinationAccount.owner === "joint")) {
+          nextAccountBalances.set(destinationAccount.id, addPence(nextAccountBalances.get(destinationAccount.id) ?? zeroPence(), proceedsShareRemaining));
+          nextCostBasisByAccountId.set(destinationAccount.id, addPence(nextCostBasisByAccountId.get(destinationAccount.id) ?? zeroPence(), proceedsShareRemaining));
+          propertySaleTouchedAccountIds.add(destinationAccount.id);
+          proceedsShareRemaining = zeroPence();
+        } else if (destinationAccount?.kind === "cash" && (destinationAccount.owner === person.id || destinationAccount.owner === "joint")) {
+          nextAccountBalances.set(destinationAccount.id, addPence(nextAccountBalances.get(destinationAccount.id) ?? zeroPence(), proceedsShareRemaining));
+          propertySaleTouchedAccountIds.add(destinationAccount.id);
+          proceedsShareRemaining = zeroPence();
+        }
+        propertySaleNetProceeds = addPence(propertySaleNetProceeds, proceedsShareRemaining);
 
         // The property is gone and its mortgage redeemed — zero both out
         // so future years' net worth doesn't double-count them. Harmless
@@ -880,10 +959,12 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         fullBands,
         incomeTax,
         incomeTaxByBand,
+        propertySaleOccurred,
         propertySaleGain,
         propertySaleCapitalGainsTax,
         propertySalePrivateResidenceReliefApplied,
         propertySaleNetProceeds,
+        propertySaleTouchedAccountIds,
         nationalInsurance,
         annualAllowanceCharge,
         mpaaActive,
@@ -954,7 +1035,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           bucketTotals: new Map(),
           taxableIncomeSoFarForBands: p.pass1.taxableIncome,
           capitalGainsExemptAmountRemaining: p.capitalGainsExemptAmountRemainingAfterPropertySale,
-          touchedAccountIds: new Set<string>(),
+          // Seeded (not empty) so the surplus sweep below (6c) won't also
+          // route ordinary income into an ISA a property sale already
+          // credited this year, past its annual limit.
+          touchedAccountIds: new Set<string>(p.propertySaleTouchedAccountIds),
         },
       ]),
     );
@@ -1233,6 +1317,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       const fullBands = pass2a.fullBands;
       const incomeTax = pass2a.incomeTax;
       const incomeTaxByBand = pass2a.incomeTaxByBand;
+      const propertySaleOccurred = pass2a.propertySaleOccurred;
       const propertySaleGain = pass2a.propertySaleGain;
       const propertySaleCapitalGainsTax = pass2a.propertySaleCapitalGainsTax;
       const propertySalePrivateResidenceReliefApplied = pass2a.propertySalePrivateResidenceReliefApplied;
@@ -1515,6 +1600,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         rentalProfitIncome: pass1.rentalProfitIncome,
         statePensionIncome: pass1.statePensionIncome,
         mortgageInterestCredit: pass1.mortgageInterestCredit,
+        propertySaleOccurred,
         propertySaleGain,
         propertySaleCapitalGainsTax,
         propertySalePrivateResidenceReliefApplied,

@@ -213,6 +213,23 @@ export interface PlannedSale {
   /** If omitted, the engine grows the property's current value to the sale date at its own house-price growth rate instead (SPEC.md §3.8). */
   readonly expectedSalePrice?: Pence;
   readonly sellingCosts: Pence;
+  /**
+   * An ISA, GIA, or cash `Account.id` to credit the net sale proceeds
+   * into directly, if any (SPEC.md §3.8) — mirrors
+   * `OneOffInflowConfig.destinationAccountId`, resolved in
+   * `simulation/runProjection.ts` rather than here, since a catalog/
+   * account type's own config never sees other account balances. An ISA
+   * destination is capped at that account owner's remaining annual
+   * subscription limit for the year; anything over that (routine for a
+   * house sale, which usually dwarfs the ISA allowance) keeps going into
+   * that owner's own GIA, then cash, rather than being lost. Left
+   * unset, or pointing at an account this property's proceeds can't
+   * reach (e.g. a different person's sole ISA, for the other owner's
+   * share of a jointly-held property), the proceeds just become
+   * ordinary net income, picked up by the automatic surplus sweep like
+   * any other windfall — today's default behaviour, unchanged.
+   */
+  readonly destinationAccountId?: string;
 }
 
 export interface Property extends AccountBase {

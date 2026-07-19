@@ -300,7 +300,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
         </Section>
       )}
 
-      {(person.propertySaleGain > 0 || person.propertySaleNetProceeds !== 0) && (
+      {person.propertySaleOccurred && (
         <Section title="Property sale">
           <KeyValue label="Gain (sale price − purchase price − selling costs)" amount={person.propertySaleGain} />
           {person.propertySalePrivateResidenceReliefApplied ? (
@@ -316,7 +316,12 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
               info="At the residential property rate, after your CGT Annual Exempt Amount (shared with any other capital gains this year, e.g. a GIA withdrawal)."
             />
           )}
-          <KeyValue label="Net proceeds (after selling costs, mortgage redemption, and CGT)" amount={person.propertySaleNetProceeds} bold />
+          <KeyValue
+            label="Net proceeds not sent to a chosen account"
+            amount={person.propertySaleNetProceeds}
+            bold
+            info="After selling costs, mortgage redemption, and CGT. If this property's sale was set to pay into a specific ISA/GIA/cash account, whatever fit there is credited directly instead and won't appear here — this is only the leftover, counted as ordinary income."
+          />
         </Section>
       )}
 

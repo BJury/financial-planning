@@ -109,6 +109,8 @@ interface PropertyAccountDraft {
   readonly saleDate: string;
   readonly expectedSalePrice: number; // pounds — 0 means "not set" (grow current value to the sale date instead)
   readonly sellingCosts: number;
+  /** An ISA/GIA/cash account id to credit the net sale proceeds into directly — unset means "just ordinary net income", today's default. */
+  readonly destinationAccountId: string | undefined;
 }
 
 /**
@@ -290,6 +292,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
         saleDate: a.plannedSale?.saleDate ?? "",
         expectedSalePrice: a.plannedSale?.expectedSalePrice ? penceToPounds(a.plannedSale.expectedSalePrice) : 0,
         sellingCosts: a.plannedSale ? penceToPounds(a.plannedSale.sellingCosts) : 0,
+        destinationAccountId: a.plannedSale?.destinationAccountId,
       })),
     drawdownTarget: existingDrawdownTarget ?? createDefaultDrawdownTarget(),
     incomeSources: scenario.incomeSources.filter((s) => s.type !== "targetDrawdownIncome"),
@@ -470,6 +473,7 @@ export function Onboarding() {
               saleDate: a.saleDate,
               sellingCosts: poundsToPence(a.sellingCosts),
               ...(a.expectedSalePrice > 0 ? { expectedSalePrice: poundsToPence(a.expectedSalePrice) } : {}),
+              ...(a.destinationAccountId ? { destinationAccountId: a.destinationAccountId } : {}),
             },
           }
         : {}),
@@ -733,6 +737,9 @@ export function Onboarding() {
             hasSecondPerson={hasSecondPerson}
             dateOfBirth={dateOfBirth}
             personBDateOfBirth={personBDateOfBirth}
+            isaAccounts={isaAccounts}
+            giaAccounts={giaAccounts}
+            cashAccounts={cashAccounts}
             onChange={(updated) => setProperties((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setProperties((prev) => prev.filter((a) => a.id !== property.id))}
           />
@@ -813,6 +820,7 @@ export function Onboarding() {
                   saleDate: "",
                   expectedSalePrice: 0,
                   sellingCosts: 0,
+                  destinationAccountId: undefined,
                 },
               ])
             }
@@ -1283,6 +1291,9 @@ function PropertyAccountCard({
   hasSecondPerson,
   dateOfBirth,
   personBDateOfBirth,
+  isaAccounts,
+  giaAccounts,
+  cashAccounts,
   onChange,
   onRemove,
 }: {
@@ -1291,6 +1302,9 @@ function PropertyAccountCard({
   readonly hasSecondPerson: boolean;
   readonly dateOfBirth: string;
   readonly personBDateOfBirth: string;
+  readonly isaAccounts: readonly IsaAccountDraft[];
+  readonly giaAccounts: readonly GiaAccountDraft[];
+  readonly cashAccounts: readonly CashAccountDraft[];
   readonly onChange: (property: PropertyAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
@@ -1489,6 +1503,18 @@ function PropertyAccountCard({
                 thousandSeparator=","
                 value={property.sellingCosts}
                 onChange={(v) => onChange({ ...property, sellingCosts: typeof v === "number" ? v : 0 })}
+              />
+              <Select
+                label="Pay proceeds into (optional)"
+                description="Leave blank for the default — just ordinary spendable income for that year"
+                data={[
+                  ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })),
+                  ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })),
+                  ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })),
+                ]}
+                value={property.destinationAccountId ?? null}
+                onChange={(v) => onChange({ ...property, destinationAccountId: v ?? undefined })}
+                clearable
               />
             </Stack>
           </Card>

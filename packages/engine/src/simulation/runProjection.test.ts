@@ -1701,6 +1701,180 @@ describe("runProjection — property sale (SPEC.md §3.8, §5.6)", () => {
   });
 });
 
+describe("runProjection — property sale destination account (SPEC.md §3.8)", () => {
+  const person: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
+  const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
+
+  /** Same main-residence sale as the hand-verified test above — PRR-exempt, so £240,000 net proceeds with £0 CGT, isolating the destination-routing behaviour from any tax-calculation noise. */
+  function makeMainResidence(destinationAccountId?: string): Property {
+    return {
+      kind: "property",
+      id: "prop1",
+      owner: PERSON_ID,
+      propertyType: "mainResidence",
+      currentBalance: poundsToPence(400000),
+      annualGrowthRate: 0.02,
+      purchasePrice: poundsToPence(300000),
+      purchaseDate: "2010-01-01",
+      mortgage: { initialBalance: poundsToPence(200000), nominalInterestRate: 0.04, repaymentType: "repayment", termYears: 20, annualPayment: poundsToPence(14709.16) },
+      plannedSale: {
+        saleDate: "2026-06-01",
+        expectedSalePrice: poundsToPence(450000),
+        sellingCosts: poundsToPence(10000),
+        ...(destinationAccountId ? { destinationAccountId } : {}),
+      },
+    };
+  }
+
+  it("credits a chosen cash account directly, with none of it left over as net income", () => {
+    const cash: Account = { kind: "cash", id: "cash1", owner: PERSON_ID, currentBalance: zeroPence(), annualGrowthRate: 0 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [makeMainResidence("cash1"), cash],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.accountBalances.get("cash1")).toBe(poundsToPence(240000));
+    expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(0);
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
+  });
+
+  it("credits a chosen GIA directly and raises its cost basis by the same amount", () => {
+    const gia: Account = { kind: "gia", id: "gia1", owner: PERSON_ID, currentBalance: zeroPence(), costBasis: zeroPence(), annualGrowthRate: 0, annualDividendYield: 0 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [makeMainResidence("gia1"), gia],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(240000));
+    expect(result.rows[0]?.costBasisByAccountId.get("gia1")).toBe(poundsToPence(240000));
+    expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(0);
+  });
+
+  it("caps an ISA destination at the annual subscription limit and sweeps the overflow into a GIA, not net income", () => {
+    const isa: Account = { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: zeroPence(), annualGrowthRate: 0 };
+    const gia: Account = { kind: "gia", id: "gia1", owner: PERSON_ID, currentBalance: zeroPence(), costBasis: zeroPence(), annualGrowthRate: 0, annualDividendYield: 0 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [makeMainResidence("isa1"), isa, gia],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    // £240,000 net proceeds, capped at the £20,000 ISA annual subscription limit — the £220,000 remainder falls through to the GIA.
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(20000));
+    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(220000));
+    expect(result.rows[0]?.costBasisByAccountId.get("gia1")).toBe(poundsToPence(220000));
+    expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(0);
+  });
+
+  it("caps an ISA destination and falls back to cash when no GIA exists", () => {
+    const isa: Account = { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: zeroPence(), annualGrowthRate: 0 };
+    const cash: Account = { kind: "cash", id: "cash1", owner: PERSON_ID, currentBalance: zeroPence(), annualGrowthRate: 0 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [makeMainResidence("isa1"), isa, cash],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(20000));
+    expect(result.rows[0]?.accountBalances.get("cash1")).toBe(poundsToPence(220000));
+    expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(0);
+  });
+
+  it("an ISA destination already touched by the automatic surplus sweep isn't double-credited past the annual limit", () => {
+    // No GIA/cash to fall back into, so once the ISA's own £20,000 room is
+    // used by the sale, the £220,000 remainder becomes ordinary net
+    // income — and the *separate* end-of-year surplus sweep (6c) must not
+    // then also try to push that same net income back into the very ISA
+    // the sale already maxed out.
+    const isa: Account = { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: zeroPence(), annualGrowthRate: 0 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [makeMainResidence("isa1"), isa],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(20000));
+    expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(poundsToPence(220000));
+    expect(result.rows[0]?.perPerson[0]?.surplusSweptToIsa).toBe(0);
+  });
+
+  it("falls back to ordinary net income, exactly like no destination being set, when destinationAccountId points at a nonexistent account", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [makeMainResidence("does-not-exist")],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(poundsToPence(240000));
+  });
+
+  it("a jointly-owned property's destination only credits the owner it actually belongs to — the other owner's share still becomes ordinary net income", () => {
+    const PERSON_A_ID = personId("a");
+    const PERSON_B_ID = personId("b");
+    const personA: Person = { id: PERSON_A_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
+    const personB: Person = { id: PERSON_B_ID, dateOfBirth: "1982-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
+    const jointHousehold: Household = { people: [personA, personB], relationshipStatus: "unmarried", targetIncomeMode: "perPerson" };
+    const cashA: Account = { kind: "cash", id: "cashA", owner: PERSON_A_ID, currentBalance: zeroPence(), annualGrowthRate: 0 };
+    const jointProperty: Property = { ...makeMainResidence("cashA"), owner: "joint" };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: jointHousehold,
+      accounts: [jointProperty, cashA],
+      incomeSources: [],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const resultA = result.rows[0]?.perPerson.find((p) => p.personId === PERSON_A_ID);
+    const resultB = result.rows[0]?.perPerson.find((p) => p.personId === PERSON_B_ID);
+
+    // £240,000 net proceeds split 50/50 — £120,000 each.
+    expect(result.rows[0]?.accountBalances.get("cashA")).toBe(poundsToPence(120000));
+    expect(resultA?.propertySaleNetProceeds).toBe(0);
+    expect(resultB?.propertySaleNetProceeds).toBe(poundsToPence(120000));
+  });
+});
+
 describe("runProjection — combined multi-year rental, mortgage, and sale (SPEC.md §3.8, §5.6)", () => {
   /**
    * A regression test pinning down a full plan's worth of behaviour
