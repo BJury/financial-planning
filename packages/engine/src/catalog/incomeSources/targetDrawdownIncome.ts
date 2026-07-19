@@ -13,7 +13,17 @@ import type {
 export type HouseholdDrawdownSplitStrategy = "optimised" | "even" | "custom";
 
 export interface TargetDrawdownIncomeConfig {
-  /** How much net (after-tax) income this person (or household, if jointly owned) wants this year, in today's money (SPEC.md §5.7.1). */
+  /**
+   * The total net (after-tax) income this person (or household, if jointly
+   * owned) wants this year, in today's money (SPEC.md §5.7.1/§5.7.2) — not
+   * just "how much extra to draw on top of everything else". Salary, State
+   * Pension, rental profit, and other automatic income all count toward it
+   * first; drawdown only fills whatever gap is left. Achieving this amount
+   * is automatically treated as spent, so a separate Living Expenses drain
+   * isn't required for the primary "will I have enough" journey — it's
+   * there for the (rarer) case where actual spending genuinely differs
+   * from this figure.
+   */
   readonly targetNetAnnualIncome: Pence;
   /** Defaults, in the UI, to the owner's target retirement age (SPEC.md §5.7.1). For a joint target, gated on the first household member's age — a documented v1 convention (SPEC.md §5.7.4). */
   readonly startAge: number;
@@ -26,7 +36,7 @@ export interface TargetDrawdownIncomeConfig {
 }
 
 const fields: readonly CatalogFieldSchema<TargetDrawdownIncomeConfig>[] = [
-  { key: "targetNetAnnualIncome", label: "Target net annual income", input: "currency", required: true },
+  { key: "targetNetAnnualIncome", label: "Target total annual income", input: "currency", required: true },
   { key: "startAge", label: "Starts at age", input: "age", required: true },
   { key: "endAge", label: "Ends at age", input: "age", required: false },
   {
@@ -113,9 +123,9 @@ function calculateForYear(
 
 export const targetDrawdownIncomeDefinition: IncomeSourceDefinition<TargetDrawdownIncomeConfig> = {
   type: "targetDrawdownIncome",
-  displayName: "Drawdown income target",
+  displayName: "Retirement income target",
   description:
-    "How much net income you want to draw each year in retirement — the engine pools every pension, ISA, cash, and GIA account this applies to and works out the most tax-efficient mix of withdrawals to hit it",
+    "The total income you want each year in retirement — salary, State Pension, rental profit, and any other automatic income all count first, and drawdown fills only the remaining gap, pooling every pension, ISA, cash, and GIA account this applies to for the most tax-efficient mix of withdrawals. Reaching this figure counts as spent, so there's no need for a separate Living Expenses entry unless your actual spending genuinely differs from it",
   taxCategory: "pensionIncome",
   fields,
   validate,

@@ -58,6 +58,7 @@ import { calculateSavingsTax, determinePersonalSavingsAllowance } from "../tax/s
 import { calculateDividendTax } from "../tax/dividendTax.js";
 import { solveDrawdown, type DrawdownSolverResult } from "../drawdown/solveDrawdown.js";
 import { solveHouseholdDrawdown, type HouseholdDrawdownStrategy } from "../drawdown/solveHouseholdDrawdown.js";
+import { adjustDrawdownTargetForAutomaticIncome } from "../drawdown/adjustDrawdownTargetForAutomaticIncome.js";
 import type { PensionContributionConfig } from "../catalog/incomeDrains/pensionContribution.js";
 import type { IsaContributionConfig } from "../catalog/incomeDrains/isaContribution.js";
 import type { GiaContributionConfig } from "../catalog/incomeDrains/giaContribution.js";
@@ -1053,6 +1054,48 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       }
     };
 
+    // A drawdown target represents *total* desired income, not "how much
+    // extra to draw on top of everything else" (SPEC.md §5.7.2). Work out
+    // how much of each person's target is already covered before sizing
+    // any withdrawal: salary, rental profit, State Pension, tax-free
+    // income, and property-sale net proceeds, net of Income Tax/NI/Annual
+    // Allowance charge already finalised for them in Pass 2a — everything
+    // needed here is already known by this point in the loop. Dividend/
+    // savings interest income isn't available yet (computed later, in
+    // Pass 2b) and so can't be netted off — a documented v1 gap,
+    // consistent with drawdown's own pre-existing inability to see those
+    // either. Reused for two things below: sizing the actual withdrawal
+    // (this loop), and, in Pass 2b, capping how much of a person's
+    // achieved income automatically counts as spent rather than swept as
+    // surplus.
+    const otherNetIncomeByPersonId = new Map<PersonId, Pence>(
+      pass2aResults.map((p) => [
+        p.pass1.person.id,
+        subtractPence(
+          sumPence([p.pass1.grossIncome, p.pass1.rentalProfitIncome, p.pass1.statePensionIncome, p.pass1.taxFreeIncome, p.propertySaleNetProceeds, p.pass1.mortgageInterestCredit]),
+          sumPence([p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge]),
+        ),
+      ]),
+    );
+
+    // Every currently-active target instance's own stated figure, summed
+    // per person it applies to (almost always just one instance) — the
+    // cap Pass 2b uses to decide how much achieved income counts as
+    // automatically spent, not the *adjusted* (already-netted) target
+    // used to size the withdrawal itself.
+    const personTargetTotal = new Map<PersonId, Pence>();
+    for (const source of scenario.incomeSources) {
+      if (source.type !== "targetDrawdownIncome") continue;
+      if (!isWithinActiveDateRange(source.startDate, source.endDate, yearContext.calendarYear)) continue;
+      const definition = registry.getIncomeSource(source.type);
+      const config = source.config as TargetDrawdownIncomeConfig;
+      if (!definition.isActive(config, state, yearContext, source.owner)) continue;
+      const applicablePersonIds = source.owner === "joint" ? pass2aResults.map((p) => p.pass1.person.id) : [source.owner];
+      for (const personId of applicablePersonIds) {
+        personTargetTotal.set(personId, addPence(personTargetTotal.get(personId) ?? zeroPence(), config.targetNetAnnualIncome));
+      }
+    }
+
     for (const source of scenario.incomeSources) {
       if (source.type !== "targetDrawdownIncome") continue;
       if (!isWithinActiveDateRange(source.startDate, source.endDate, yearContext.calendarYear)) continue;
@@ -1096,7 +1139,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
               ? { kind: "custom", firstPersonShare: config.customFirstPersonShare ?? 0.5 }
               : { kind: "optimised" };
 
-        const householdResult = solveHouseholdDrawdown(config.targetNetAnnualIncome, strategy, householdPeopleInputs, prepared.capitalGainsTax);
+        const householdOtherNetIncome = sumPence(eligiblePeople.map((p) => otherNetIncomeByPersonId.get(p.pass1.person.id) ?? zeroPence()));
+        const adjustedHouseholdTarget = adjustDrawdownTargetForAutomaticIncome(config.targetNetAnnualIncome, householdOtherNetIncome);
+
+        const householdResult = solveHouseholdDrawdown(adjustedHouseholdTarget, strategy, householdPeopleInputs, prepared.capitalGainsTax);
 
         for (const { id: personId, result } of householdResult.perPerson) {
           const accountIds = accountIdsByPerson.get(personId) ?? discoverAccountIds(personId);
@@ -1114,9 +1160,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       const accountIds = discoverAccountIds(source.owner);
       const balances = balancesFor(accountIds);
       const lumpSumAllowanceRemaining = subtractPence(prepared.pensions.lumpSumAllowance, nextLumpSumAllowanceUsed.get(source.owner) ?? zeroPence());
+      const adjustedTarget = adjustDrawdownTargetForAutomaticIncome(config.targetNetAnnualIncome, otherNetIncomeByPersonId.get(source.owner) ?? zeroPence());
 
       const result = solveDrawdown({
-        targetNetAmount: config.targetNetAnnualIncome,
+        targetNetAmount: adjustedTarget,
         bandHeadroom: computeRemainingBandHeadroom(pass2a.fullBands, accumulator.taxableIncomeSoFarForBands),
         lumpSumAllowanceRemaining,
         capitalGainsExemptAmountRemaining: accumulator.capitalGainsExemptAmountRemaining,
@@ -1216,6 +1263,21 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       // that money into an account, so it must come off spendable cash
       // the same way `otherExpenses` does, or the surplus sweep below
       // would treat it as still-unallocated and invest it a second time.
+      // A drawdown target represents total desired income, and achieving
+      // it is automatically treated as spent — otherwise it would just
+      // sit as unswept surplus unless the user separately configured a
+      // matching Living Expenses drain (the confusion this mechanism
+      // fixes). Capped at this person's own target total(s) so it never
+      // consumes more than they actually asked to spend, and reduced by
+      // whatever an explicit drain (`pass1.otherExpenses`, e.g. Living
+      // Expenses) already accounts for, so the two never double-count:
+      // an explicit drain that already matches or exceeds the target
+      // does all the work unchanged, and one that falls short is topped
+      // up by exactly the gap.
+      const personTarget = personTargetTotal.get(person.id) ?? zeroPence();
+      const achievedTowardTarget = addPence(otherNetIncomeByPersonId.get(person.id) ?? zeroPence(), drawdownNetAchieved);
+      const autoConsumption = maxPence(subtractPence(minPence(personTarget, achievedTowardTarget), pass1.otherExpenses), zeroPence());
+
       const netIncome = subtractPence(
         sumPence([
           pass1.grossIncome,
@@ -1226,7 +1288,16 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           pass1.mortgageInterestCredit,
           propertySaleNetProceeds,
         ]),
-        sumPence([incomeTax, nationalInsurance, annualAllowanceCharge, pass1.otherExpenses, pass1.accountContributions, savingsTax, dividendTax]),
+        sumPence([
+          incomeTax,
+          nationalInsurance,
+          annualAllowanceCharge,
+          pass1.otherExpenses,
+          pass1.accountContributions,
+          savingsTax,
+          dividendTax,
+          autoConsumption,
+        ]),
       );
 
       // 6c. Surplus cash sweep: any positive net income not otherwise

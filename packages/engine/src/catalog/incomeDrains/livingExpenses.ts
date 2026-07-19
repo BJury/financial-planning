@@ -51,7 +51,8 @@ function calculateForYear(
 export const livingExpensesDefinition: IncomeDrainDefinition<LivingExpensesConfig> = {
   type: "livingExpenses",
   displayName: "Living expenses",
-  description: "Ordinary day-to-day spending — rent, bills, food, and so on",
+  description:
+    "Optional — a Retirement income target already counts as spent once achieved, so this isn't needed for the usual case. Use it only to track spending that genuinely differs from the target, e.g. a known one-off higher- or lower-spending period",
   taxTreatment: "none",
   fields,
   validate,

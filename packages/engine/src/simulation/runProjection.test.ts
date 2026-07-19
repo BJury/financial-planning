@@ -777,7 +777,15 @@ describe("runProjection — surplus sweep never reinvests into an account the dr
     expect(result.rows[2]?.accountBalances.get("isa1")).toBe(0);
   });
 
-  it("still sweeps unspent net income into a *different*, untouched ISA — the fix only skips the account(s) actually drawn from", () => {
+  it("achieving the target income leaves nothing to sweep — an active target auto-consumes its own achieved income, so the untouched ISA is left exactly as it was", () => {
+    // Now that a drawdown target represents total desired income and
+    // achieving it automatically counts as spent (no separate Living
+    // Expenses drain required), a person with an active target never has
+    // leftover positive net income to sweep from their own achieved
+    // income — that's the point of the merged mental model. The ISA here
+    // was never drawn from by the drawdown itself (entirely sourced from
+    // the pension), and it's *also* never a sweep target, since there's
+    // no surplus left once the £5,000 achieved is auto-consumed.
     const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
     const scenario: Scenario = {
       schemaVersion: 1,
@@ -795,21 +803,28 @@ describe("runProjection — surplus sweep never reinvests into an account the dr
 
     const result = runProjection(scenario, ruleSet2026_27, 1);
     expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(5000));
-    // The ISA wasn't drawn from at all, so it's still a valid sweep target for the unspent £5,000: £1,000 + £5,000 = £6,000.
-    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(6000));
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(1000));
   });
 
   it("doesn't sweep automatic income (State Pension) into an already-exhausted ISA during an active drawdown shortfall — no year-over-year oscillation", () => {
     // The exact second user-reported bug: once the ISA a drawdown target
-    // was drawing from is fully exhausted, State Pension income (unaffected
-    // by the drawdown's own shortfall — SPEC.md §5.7.2's known gap, the
-    // target isn't reduced by other automatic income) is still positive
-    // net income with nothing to spend it on. Without the shortfall guard,
-    // that got swept into the (untouched-*this*-year) empty ISA, which the
-    // *next* year's drawdown immediately drew straight back out — an
-    // infinite oscillation between two net income figures, never settling,
-    // instead of the ISA correctly staying drained and net income
-    // correctly staying flat at just the State Pension amount.
+    // was drawing from is fully exhausted, State Pension income was still
+    // positive net income with nothing to spend it on, and (without the
+    // shortfall guard) got swept into the (untouched-*this*-year) empty
+    // ISA, which the *next* year's drawdown immediately drew straight
+    // back out — an infinite oscillation, never settling.
+    //
+    // Now that a target represents *total* desired income (SPEC.md
+    // §5.7.2), State Pension nets off the target before drawdown is even
+    // sized, and — since the target is the household's whole notion of
+    // "spent" — State Pension's own contribution toward it is
+    // auto-consumed too, not left as spendable surplus. So net income
+    // settles flat at exactly £0 in every year here, not just "flat at
+    // the State Pension amount": a stronger, more direct fix for the
+    // same oscillation bug (there's genuinely nothing left over to
+    // oscillate with, rather than merely nothing left over that gets
+    // reinvested).
     const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95, statePensionAge: 65 }; // already past SPA in 2026
     const scenario: Scenario = {
       schemaVersion: 1,
@@ -817,7 +832,11 @@ describe("runProjection — surplus sweep never reinvests into an account the dr
       accounts: [{ kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(10000), annualGrowthRate: 0 }],
       incomeSources: [
         { id: "sp1", type: "statePension", owner: PERSON_ID, config: { annualForecastAmount: poundsToPence(11000) } },
-        { id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(20000), startAge: 65 } },
+        // Raised from £20,000: with State Pension now netted off the target before
+        // sizing the withdrawal, the £10,000 ISA must still be fully exhausted in year
+        // 0 (adjusted target £14,000 > £10,000 available) to preserve the same shortfall
+        // scenario this test exists to cover.
+        { id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(25000), startAge: 65 } },
       ],
       incomeDrains: [],
       inflationRate: 0.025,
@@ -827,18 +846,103 @@ describe("runProjection — surplus sweep never reinvests into an account the dr
     const result = runProjection(scenario, ruleSet2026_27, 4);
     // Year 0: the £10,000 ISA is fully drawn (touched this year, so already excluded from any sweep regardless).
     expect(result.rows[0]?.accountBalances.get("isa1")).toBe(0);
+    expect(result.rows[0]?.perPerson[0]?.drawdownShortfall).toBe(true);
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
     // Years 1-3: ISA already empty, drawdown achieves £0 every year (a
-    // standing shortfall) — State Pension's £11,000 (untaxed, well within
-    // the Personal Allowance on its own) must NOT be swept into the idle
-    // ISA, so it stays at exactly £0 in every subsequent year, and net
-    // income stays flat at exactly £11,000 rather than oscillating.
+    // standing shortfall) — State Pension's £11,000 is fully auto-consumed
+    // toward the still-unmet target, so it stays at exactly £0 in every
+    // subsequent year, and net income settles flat at exactly £0 rather
+    // than oscillating.
     for (let i = 1; i <= 3; i++) {
       const row = result.rows[i];
       expect(row?.perPerson[0]?.drawdownNetAchieved).toBe(0);
       expect(row?.perPerson[0]?.drawdownShortfall).toBe(true);
       expect(row?.accountBalances.get("isa1")).toBe(0);
-      expect(row?.perPerson[0]?.netIncome).toBe(poundsToPence(11000));
+      expect(row?.perPerson[0]?.netIncome).toBe(0);
     }
+  });
+});
+
+describe("runProjection — a drawdown target represents total desired income, auto-consumed once achieved (SPEC.md §5.7.2)", () => {
+  it("nets the target against salary — a £10,000 salary and £30,000 target draw exactly £20,000 from savings, with nothing left to sweep", () => {
+    // The user's own worked example: making £30,000 and wanting £50,000
+    // means drawing down £20,000. Salary here is chosen below both the
+    // Personal Allowance and NI primary threshold (£12,570) so it's
+    // entirely untaxed — net salary equals gross salary exactly, giving a
+    // clean, exact assertion rather than one obscured by tax/NI.
+    // A single pension account only — a real scenario would likely also
+    // hold an ISA, but the drawdown solver auto-discovers and pools *every*
+    // pension/ISA/cash/GIA account the target applies to, preferring
+    // tax-free ISA withdrawals first — so an ISA balance here would itself
+    // get drawn from rather than staying untouched, muddying this test's
+    // actual point (the target-vs-salary netting arithmetic).
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" },
+      accounts: [{ kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(500000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() }],
+      incomeSources: [
+        { id: "sal1", type: "salary", owner: PERSON_ID, config: { grossAnnualSalary: poundsToPence(10000), annualGrowthRate: 0 } },
+        { id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(30000), startAge: 65 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const p = result.rows[0]?.perPerson[0];
+    expect(p?.incomeTax).toBe(0);
+    expect(p?.nationalInsurance).toBe(0);
+    expect(p?.drawdownNetAchieved).toBe(poundsToPence(20000));
+    // The whole £30,000 (salary + drawdown) is achieved toward the target and auto-consumed — nothing left over to sweep.
+    expect(p?.netIncome).toBe(0);
+  });
+
+  it("achieves the full target with no Living Expenses drain at all — zero surplus swept, pension declining by exactly the amount drawn", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" },
+      accounts: [{ kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(1000000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() }],
+      incomeSources: [{ id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(20000), startAge: 65 } }],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const p = result.rows[0]?.perPerson[0];
+    expect(p?.drawdownNetAchieved).toBe(poundsToPence(20000));
+    expect(p?.netIncome).toBe(0);
+    // No surplus swept anywhere — the pension balance falls by exactly the gross amount drawn, nothing more, nothing less.
+    expect(result.rows[0]?.accountBalances.get("pension1")).toBe(subtractPence(poundsToPence(1000000), p?.drawdownGrossWithdrawn ?? zeroPence()));
+  });
+
+  it("keeps an explicit Living Expenses drain working exactly as before alongside a target, without double-counting", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+    const makeScenario = (livingExpenses: number): Scenario => ({
+      schemaVersion: 1,
+      household: { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" },
+      accounts: [{ kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(1000000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() }],
+      incomeSources: [{ id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(30000), startAge: 65 } }],
+      incomeDrains: [{ id: "exp1", type: "livingExpenses", owner: PERSON_ID, config: { annualAmount: poundsToPence(livingExpenses) } }],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    });
+
+    // An explicit drain that already matches the target: does all the work itself, auto-consumption is zero.
+    const matching = runProjection(makeScenario(30000), ruleSet2026_27, 1);
+    const matchingPerson = matching.rows[0]?.perPerson[0];
+    expect(matchingPerson?.drawdownNetAchieved).toBe(poundsToPence(30000));
+    expect(matchingPerson?.netIncome).toBe(0);
+
+    // An explicit drain smaller than the target: auto-consumption tops up exactly the gap, no double-count.
+    const partial = runProjection(makeScenario(10000), ruleSet2026_27, 1);
+    const partialPerson = partial.rows[0]?.perPerson[0];
+    expect(partialPerson?.drawdownNetAchieved).toBe(poundsToPence(30000));
+    expect(partialPerson?.netIncome).toBe(0);
+    expect(partial.rows[0]?.accountBalances.get("pension1")).toBe(matching.rows[0]?.accountBalances.get("pension1"));
   });
 });
 
@@ -1513,7 +1617,12 @@ describe("runProjection — property sale (SPEC.md §3.8, §5.6)", () => {
       id: "src2",
       type: "targetDrawdownIncome",
       owner: PERSON_ID,
-      config: { targetNetAnnualIncome: poundsToPence(10000), startAge: 55 },
+      // Raised from £10,000: a drawdown target now nets off the property sale's
+      // ~£103,000 net proceeds before sizing the withdrawal, so the target must
+      // exceed that to still leave a genuine £10,000 gap for the GIA to fill —
+      // preserving this test's actual point (a same-year AEA shared between the
+      // sale and the GIA withdrawal).
+      config: { targetNetAnnualIncome: poundsToPence(113000), startAge: 55 },
     };
     const scenario: Scenario = {
       schemaVersion: 1,
@@ -1974,7 +2083,12 @@ describe("runProjection — household drawdown optimisation (SPEC.md §5.7.4)", 
           type: "targetDrawdownIncome",
           owner: "joint",
           config: {
-            targetNetAnnualIncome: poundsToPence(60000),
+            // Raised from £60,000: a joint target now nets off both people's other net
+            // income before sizing the household drawdown, and Person B's £80,000 salary
+            // alone nets to roughly £57,000 after tax/NI — close enough to the old £60,000
+            // target to leave almost nothing for these tests to actually optimise/split.
+            // £150,000 leaves a genuine ~£93,000 gap for the household solver to work with.
+            targetNetAnnualIncome: poundsToPence(150000),
             startAge: 55,
             ...(householdSplitStrategy ? { householdSplitStrategy } : {}),
             ...(customFirstPersonShare !== undefined ? { customFirstPersonShare } : {}),
@@ -2373,7 +2487,11 @@ describe("runProjection — MPAA (SPEC.md §5.4)", () => {
                 id: "drawdown1",
                 type: "targetDrawdownIncome",
                 owner: MPAA_PERSON_ID,
-                config: { targetNetAnnualIncome: poundsToPence(15000), startAge: 63 },
+                // Raised from £15,000: the £30,000 salary nets to ~£25,000 after tax/NI,
+                // which alone would now zero out a £15,000 target and mean the drawdown —
+                // the whole point of this scenario — never actually runs. £45,000 leaves a
+                // genuine ~£20,000 gap for the drawdown to fill and trigger MPAA with.
+                config: { targetNetAnnualIncome: poundsToPence(45000), startAge: 63 },
               } as const,
             ]
           : []),
@@ -2530,7 +2648,12 @@ describe("runProjection — State Pension (SPEC.md §3.3, §5.2, §5.3)", () => 
           id: "drawdown1",
           type: "targetDrawdownIncome",
           owner: SP_PERSON_ID,
-          config: { targetNetAnnualIncome: poundsToPence(10000), startAge: 66 },
+          // Raised from £10,000: State Pension now nets off the target itself (not just
+          // band headroom), and £11,000 of it alone would zero out a £10,000 target
+          // entirely — no drawdown left to test the headroom effect with. £25,000 leaves
+          // a genuine £14,000 gap, still large enough to spill past the remaining £1,570
+          // of Personal Allowance headroom into the basic rate band.
+          config: { targetNetAnnualIncome: poundsToPence(25000), startAge: 66 },
         },
       ],
       incomeDrains: [],
@@ -2540,12 +2663,13 @@ describe("runProjection — State Pension (SPEC.md §3.3, §5.2, §5.3)", () => 
     // Year 1 (2027, age 66): State Pension (£11,000) already exceeds the £12,570 Personal Allowance on its own,
     // leaving only £1,570 of 0%-rate headroom before the drawdown solver's withdrawal spills into the basic rate band —
     // so unlike a from-scratch drawdown (SPEC.md's own "sources a target entirely from within the Personal Allowance"
-    // case), this one must incur some Income Tax.
+    // case), this one must incur some Income Tax. The target itself is also netted against
+    // State Pension first (£25,000 − £11,000 = £14,000 actually drawn).
     const result = runProjection(scenario, ruleSet2026_27, 2);
     const year1 = result.rows[1]?.perPerson[0];
     expect(year1?.statePensionIncome).toBe(poundsToPence(11000));
     expect(year1?.drawdownIncomeTax).toBeGreaterThan(0);
-    expect(year1?.drawdownNetAchieved).toBe(poundsToPence(10000));
+    expect(year1?.drawdownNetAchieved).toBe(poundsToPence(14000));
   });
 });
 

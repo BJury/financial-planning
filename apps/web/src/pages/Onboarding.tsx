@@ -937,8 +937,12 @@ function DrawdownTargetSection({
     <Stack gap="sm">
       <Title order={4}>Retirement income target</Title>
       <Text size="sm" c="dimmed">
-        The most important number in this plan — how much you actually want to live on each year. The engine works
-        backwards from this to find the most tax-efficient mix of withdrawals from the accounts you add below.
+        The most important number in this plan — your <strong>total</strong> desired income each year, from every
+        source combined: salary, State Pension, rental profit, and drawdown. Salary and other automatic income count
+        toward it first; the engine only draws down whatever gap is left, working out the most tax-efficient mix of
+        withdrawals from the accounts you add below. For example, £30,000 salary with a £50,000 target means £20,000
+        drawn from savings. Reaching this figure counts as spent — you don't need to separately add Living Expenses
+        unless your actual spending genuinely differs from it.
       </Text>
       {hasSecondPerson && <OwnerSelect owner={instance.owner} allowJoint onChange={(owner) => onChange({ ...instance, owner })} />}
       {isJoint && (
