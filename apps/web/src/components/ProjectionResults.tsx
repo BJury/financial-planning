@@ -675,6 +675,9 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           <Button variant="subtle" onClick={() => void navigate("/tax-breakdown")}>
             Tax breakdown
           </Button>
+          <Button variant="subtle" onClick={() => void navigate("/stress-test")}>
+            Stress test
+          </Button>
         </Group>
       </Group>
 

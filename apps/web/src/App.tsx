@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { HashRouter, Route, Routes } from "react-router";
 import { loadSavedScenario, subscribeAutosave } from "./persistence/autosave.js";
 import { Onboarding } from "./pages/Onboarding.js";
+import { StressTest } from "./pages/StressTest.js";
 import { TaxBreakdown } from "./pages/TaxBreakdown.js";
 import { useScenarioStore } from "./state/store.js";
 
@@ -40,6 +41,7 @@ export function App() {
             {/* Keyed on loadGeneration so an "Open from file" import while already on this page forces a remount — see the doc comment on ScenarioStore.loadGeneration. */}
             <Route path="/" element={<Onboarding key={loadGeneration} />} />
             <Route path="/tax-breakdown" element={<TaxBreakdown />} />
+            <Route path="/stress-test" element={<StressTest />} />
           </Routes>
         </HashRouter>
       ) : (
