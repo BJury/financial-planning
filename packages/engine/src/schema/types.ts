@@ -107,6 +107,16 @@ export interface PensionAccount extends AccountBase {
    * (SPEC.md §5.4).
    */
   readonly employerAnnualContribution: Pence;
+  /**
+   * ISO date — a SIPP can't be drawn from before the calendar year this
+   * falls in (SPEC.md §5.7, §6.1's Normal Minimum Pension Age; growth
+   * and contributions are unaffected, only withdrawal is gated). Only
+   * enforced when `pensionType` is `"sipp"` — left unset (or on a
+   * `workplaceDC` pension), there's no restriction, matching this
+   * field's absence before it existed, so an older saved/imported plan
+   * with no opinion on this keeps behaving exactly as it did.
+   */
+  readonly accessDate?: string;
 }
 
 export interface IsaAccount extends AccountBase {

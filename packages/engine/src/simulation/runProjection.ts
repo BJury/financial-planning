@@ -1100,7 +1100,14 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
      * there's no more separate "explicitly configured account id" path.
      */
     const discoverAccountIds = (personId: PersonId) => ({
-      pensionAccountIds: scenario.accounts.filter((a) => a.kind === "pension" && a.owner === personId).map((a) => a.id),
+      pensionAccountIds: scenario.accounts
+        .filter(
+          (a) =>
+            a.kind === "pension" &&
+            a.owner === personId &&
+            (a.pensionType !== "sipp" || isWithinActiveDateRange(a.accessDate, undefined, yearContext.calendarYear)),
+        )
+        .map((a) => a.id),
       isaAccountIds: scenario.accounts.filter((a) => a.kind === "isa" && a.owner === personId).map((a) => a.id),
       cashAccountIds: scenario.accounts.filter((a) => a.kind === "cash" && (a.owner === personId || a.owner === "joint")).map((a) => a.id),
       giaAccountIds: scenario.accounts.filter((a) => a.kind === "gia" && (a.owner === personId || a.owner === "joint")).map((a) => a.id),

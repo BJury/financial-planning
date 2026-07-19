@@ -594,6 +594,94 @@ describe("runProjection — drawdown target", () => {
   });
 });
 
+describe("runProjection — SIPP access date (SPEC.md §5.7)", () => {
+  /** Same shape as `makeDrawdownScenario` above, but with a configurable pension `pensionType`/`accessDate` for exercising the access-date gate specifically. */
+  function makeAccessDateScenario(options: {
+    readonly pensionType: "sipp" | "workplaceDC";
+    readonly accessDate?: string;
+    readonly targetNetAnnualIncome: number; // pounds
+  }): Scenario {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 }; // age 70 in 2026
+    const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
+
+    return {
+      schemaVersion: 1,
+      household,
+      accounts: [
+        {
+          kind: "pension",
+          id: "pension1",
+          owner: PERSON_ID,
+          pensionType: options.pensionType,
+          currentBalance: poundsToPence(500000),
+          annualGrowthRate: 0,
+          annualChargeRate: 0,
+          employerAnnualContribution: pence(0),
+          ...(options.accessDate ? { accessDate: options.accessDate } : {}),
+        },
+        { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(5000), annualGrowthRate: 0 },
+      ],
+      incomeSources: [
+        {
+          id: "drawdown1",
+          type: "targetDrawdownIncome",
+          owner: PERSON_ID,
+          config: { targetNetAnnualIncome: poundsToPence(options.targetNetAnnualIncome), startAge: 65 },
+        },
+      ],
+      incomeDrains: [
+        { id: "expenses1", type: "livingExpenses", owner: PERSON_ID, config: { annualAmount: poundsToPence(options.targetNetAnnualIncome) } },
+      ],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+  }
+
+  it("draws nothing from a SIPP before its access date — falls back to the ISA, then shortfalls", () => {
+    // Person is 70 in 2026; access date is in 2030, well after the drawdown target's own startAge (65) already made it active.
+    const scenario = makeAccessDateScenario({ pensionType: "sipp", accessDate: "2030-01-01", targetNetAnnualIncome: 10000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(500000));
+    // £5,000 ISA covers half the £10,000 target; the rest goes unfunded (no cash/GIA in this scenario).
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(0);
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(5000));
+  });
+
+  it("draws from a SIPP normally once its access date has already passed", () => {
+    const scenario = makeAccessDateScenario({ pensionType: "sipp", accessDate: "2020-01-01", targetNetAnnualIncome: 10000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(10000));
+    expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(490000));
+  });
+
+  it("never restricts a workplaceDC pension, even with a future access date", () => {
+    const scenario = makeAccessDateScenario({ pensionType: "workplaceDC", accessDate: "2030-01-01", targetNetAnnualIncome: 10000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(10000));
+    expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(490000));
+  });
+
+  it("never restricts a SIPP with no access date set at all — an older plan predating this field behaves exactly as before", () => {
+    const scenario = makeAccessDateScenario({ pensionType: "sipp", targetNetAnnualIncome: 10000 });
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(10000));
+    expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(490000));
+  });
+
+  it("starts drawing from a SIPP the exact calendar year its access date falls in, not before", () => {
+    const scenario = makeAccessDateScenario({ pensionType: "sipp", accessDate: "2028-06-15", targetNetAnnualIncome: 10000 });
+    const result = runProjection(scenario, ruleSet2026_27, 3); // 2026, 2027, 2028
+
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(5000)); // 2026 — blocked, ISA-only
+    expect(result.rows[1]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(0)); // 2027 — blocked, ISA already exhausted
+    expect(result.rows[2]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(10000)); // 2028 — access date's own year, fully funded
+  });
+});
+
 describe("runProjection — drawdown target pools every account of a kind, not just one (SPEC.md §5.7.1)", () => {
   const poolingPerson: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 }; // age 70 in 2026
   const poolingHousehold: Household = { people: [poolingPerson], relationshipStatus: null, targetIncomeMode: "perPerson" };

@@ -58,6 +58,8 @@ interface PensionAccountDraft {
   readonly annualGrowthRate: number; // real (SPEC.md §5.8) — see note on GrowthRateInput below
   readonly annualChargeRate: number;
   readonly employerAnnualContribution: number; // pounds
+  /** ISO date — every pension created here is a SIPP (see buildScenario's comment), so this is always meaningful; "" when the owner's date of birth isn't known yet to default it from. */
+  readonly accessDate: string;
 }
 
 interface IsaAccountDraft {
@@ -252,6 +254,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
         annualGrowthRate: a.annualGrowthRate,
         annualChargeRate: a.annualChargeRate,
         employerAnnualContribution: penceToPounds(a.employerAnnualContribution),
+        accessDate: a.accessDate ?? "",
       })),
     isaAccounts: scenario.accounts
       .filter((a): a is IsaAccount => a.kind === "isa")
@@ -409,6 +412,7 @@ export function Onboarding() {
       annualGrowthRate: a.annualGrowthRate,
       annualChargeRate: a.annualChargeRate,
       employerAnnualContribution: poundsToPence(a.employerAnnualContribution),
+      ...(a.accessDate ? { accessDate: a.accessDate } : {}),
     }));
 
     const isaAccountEntities: IsaAccount[] = isaAccounts.map((a) => ({
@@ -695,6 +699,8 @@ export function Onboarding() {
             account={account}
             inflationRate={inflationRate}
             hasSecondPerson={hasSecondPerson}
+            dateOfBirth={dateOfBirth}
+            personBDateOfBirth={personBDateOfBirth}
             onChange={(updated) => setPensionAccounts((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))}
             onRemove={() => setPensionAccounts((prev) => prev.filter((a) => a.id !== account.id))}
           />
@@ -758,6 +764,13 @@ export function Onboarding() {
                   annualGrowthRate: 0,
                   annualChargeRate: 0.0005,
                   employerAnnualContribution: 0,
+                  // SIPPs can't be drawn from before the Normal Minimum
+                  // Pension Age, legislated to rise to 57 from 6 April
+                  // 2028 (SPEC.md §5.7, §6.1) — defaulted to that
+                  // upcoming figure rather than the current 55, so a
+                  // new plan doesn't understate when access actually
+                  // starts for most of this projection's own horizon.
+                  accessDate: dateOfBirth ? isoDateFromAge(dateOfBirth, 57) : "",
                 },
               ])
             }
@@ -1072,15 +1085,20 @@ function PensionAccountCard({
   account,
   inflationRate,
   hasSecondPerson,
+  dateOfBirth,
+  personBDateOfBirth,
   onChange,
   onRemove,
 }: {
   readonly account: PensionAccountDraft;
   readonly inflationRate: number;
   readonly hasSecondPerson: boolean;
+  readonly dateOfBirth: string;
+  readonly personBDateOfBirth: string;
   readonly onChange: (account: PensionAccountDraft) => void;
   readonly onRemove: () => void;
 }) {
+  const ownerDob = (account.owner === PERSON_B_ID ? personBDateOfBirth : dateOfBirth) || undefined;
   return (
     <Card withBorder padding="sm">
       <Group justify="space-between" mb="xs">
@@ -1127,6 +1145,14 @@ function PensionAccountCard({
           thousandSeparator=","
           value={account.employerAnnualContribution}
           onChange={(v) => onChange({ ...account, employerAnnualContribution: typeof v === "number" ? v : 0 })}
+        />
+        <AgeOrDateInput
+          label="Can be drawn from"
+          description="The Normal Minimum Pension Age — defaults to 57, the figure legislated from 6 April 2028 (currently 55)"
+          value={account.accessDate}
+          dateOfBirth={ownerDob}
+          defaultMode="age"
+          onChange={(v) => onChange({ ...account, accessDate: v })}
         />
       </Stack>
     </Card>
