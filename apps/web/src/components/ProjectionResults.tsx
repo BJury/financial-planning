@@ -467,6 +467,53 @@ function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonl
     events.push({ key: "drawdown-start", taxYear: firstDrawdownYear.taxYear, label: "Drawdown starts", color: "#1971c2" });
   }
 
+  const { people } = scenario.household;
+
+  // Actual State Pension income only, not the configured State Pension
+  // Age — matches the "Drawdown starts" reasoning above (a person can
+  // reach State Pension Age with the amount already folded into other
+  // covered income for display purposes elsewhere, but here we're
+  // marking the year the income itself is first present in the result).
+  for (const person of people) {
+    const firstYear = result.rows.find((row) => row.perPerson.some((p) => p.personId === person.id && p.statePensionIncome > 0));
+    if (!firstYear) continue;
+    const suffix = people.length > 1 ? ` (${ownerLabel(person.id, people)})` : "";
+    events.push({ key: `statePension:${person.id}`, taxYear: firstYear.taxYear, label: `State Pension starts${suffix}`, color: "#f08c00" });
+  }
+
+  // A SIPP specifically (not a workplace DC pension) starting to be drawn
+  // from. `PersonYearResult.drawdownFromPension` is a per-person total
+  // across every pension account they own, not broken out per-account —
+  // if someone holds both a SIPP and a workplace DC pension, this is an
+  // approximation (the first year *any* of their pensions pays out),
+  // attributed here to the SIPP since that's what the user asked to see
+  // marked.
+  for (const account of scenario.accounts) {
+    if (account.kind !== "pension" || account.pensionType !== "sipp") continue;
+    const firstYear = result.rows.find((row) => row.perPerson.some((p) => p.personId === account.owner && p.drawdownFromPension > 0));
+    if (!firstYear) continue;
+    const suffix = people.length > 1 ? ` (${ownerLabel(account.owner, people)})` : "";
+    events.push({ key: `sipp-start:${account.id}`, taxYear: firstYear.taxYear, label: `SIPP starts${suffix}`, color: "#1971c2" });
+  }
+
+  // The first year a pension/ISA/GIA/cash account's balance actually hits
+  // zero, having held money at some point before that — a property's
+  // equity isn't included, since a property runs out via its own "Sale"
+  // event above, not by draining to nothing the same way a pot does.
+  for (const account of scenario.accounts) {
+    if (account.kind === "property") continue;
+    let previousBalance: Pence | undefined;
+    for (const row of result.rows) {
+      const balance = row.accountBalances.get(account.id);
+      if (balance === undefined) break;
+      if (previousBalance !== undefined && previousBalance > 0 && balance <= 0) {
+        events.push({ key: `depleted:${account.id}`, taxYear: row.taxYear, label: `${accountBaseLabel(account, people)} runs out`, color: "#e03131" });
+        break;
+      }
+      previousBalance = balance;
+    }
+  }
+
   return events;
 }
 
@@ -526,6 +573,24 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
   const keyFlags = useMemo(() => computeKeyFlags(result, scenario), [result, scenario]);
   const chartEvents = useMemo(() => (scenario && result ? buildChartEvents(scenario, result) : []), [scenario, result]);
+  // Two or more events can land on the same tax year (e.g. "Drawdown
+  // starts" and "SIPP starts" both firing the moment decumulation
+  // begins) — their labels would otherwise sit on top of each other and
+  // become unreadable. Stack same-year labels at increasing heights
+  // instead, and grow the chart's top margin to fit however tall the
+  // tallest stack turns out to be.
+  const stackedChartEvents = useMemo(() => {
+    const countByTaxYear = new Map<string, number>();
+    return chartEvents.map((e) => {
+      const stackIndex = countByTaxYear.get(e.taxYear) ?? 0;
+      countByTaxYear.set(e.taxYear, stackIndex + 1);
+      return { ...e, stackIndex };
+    });
+  }, [chartEvents]);
+  const maxEventStackSize = useMemo(
+    () => stackedChartEvents.reduce((max, e) => Math.max(max, e.stackIndex + 1), 0),
+    [stackedChartEvents],
+  );
   const shortfallRanges = useMemo(() => (result ? computeShortfallRanges(result) : []), [result]);
   const accountMetrics = useMemo(() => (scenario ? buildAccountMetrics(scenario) : []), [scenario]);
   const allMetrics = useMemo(() => [...CHART_METRICS, ...accountMetrics], [accountMetrics]);
@@ -659,7 +724,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           </Center>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 24, right: 20, bottom: 10, left: 10 }}>
+            <LineChart data={chartData} margin={{ top: 24 + Math.max(0, maxEventStackSize - 1) * 12, right: 20, bottom: 10, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
               {shortfallRanges.map((r) => (
                 <ReferenceArea key={`shortfall:${r.start}`} x1={r.start} x2={r.end} fill="#e03131" fillOpacity={0.1} ifOverflow="extendDomain" />
@@ -684,14 +749,14 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
               {visibleMetrics.map((m) => (
                 <Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} strokeWidth={2} />
               ))}
-              {chartEvents.map((e) => (
+              {stackedChartEvents.map((e) => (
                 <ReferenceLine
                   key={e.key}
                   x={e.taxYear}
                   stroke={e.color}
                   strokeDasharray="4 4"
                   ifOverflow="extendDomain"
-                  label={{ value: e.label, position: "top", fill: e.color, fontSize: 10 }}
+                  label={{ value: e.label, position: "top", fill: e.color, fontSize: 10, offset: 8 + e.stackIndex * 12 }}
                 />
               ))}
             </LineChart>
