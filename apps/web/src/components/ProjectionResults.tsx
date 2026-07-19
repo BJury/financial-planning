@@ -1,4 +1,5 @@
 import {
+  ageAtYear,
   penceToPounds,
   subtractPence,
   sumPence,
@@ -12,7 +13,7 @@ import {
   type Scenario,
   type YearLedgerRow,
 } from "@fp/engine";
-import { Alert, Button, Center, Group, MultiSelect, Stack, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { Alert, Button, Center, Group, MultiSelect, Stack, Switch, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -274,6 +275,23 @@ const ACCOUNT_KIND_LABELS: Partial<Record<Account["kind"], string>> = { pension:
 function ownerLabel(owner: Owner, people: readonly Person[]): string {
   if (owner === "joint") return "Joint";
   return people.findIndex((p) => p.id === owner) === 1 ? "Partner" : "You";
+}
+
+/**
+ * Ages as of this row's calendar year, for whoever's still alive then —
+ * built from `row.perPerson` (not the full `people` list directly) so a
+ * deceased person (SPEC.md §5.7.5's survivorship) correctly drops out
+ * the same year they stop appearing everywhere else in this row.
+ */
+function ageLabel(row: YearLedgerRow, people: readonly Person[]): string {
+  return row.perPerson
+    .flatMap((p) => {
+      const person = people.find((candidate) => candidate.id === p.personId);
+      if (!person) return [];
+      const age = ageAtYear(person.dateOfBirth, row.calendarYear);
+      return [people.length > 1 ? `${ownerLabel(person.id, people)} ${age}` : `${age}`];
+    })
+    .join(", ");
 }
 
 function accountBaseLabel(account: Account, people: readonly Person[]): string {
@@ -564,6 +582,9 @@ function computeShortfallRanges(result: ProjectionResult): readonly ShortfallRan
  */
 export function ProjectionResults({ scenario }: { readonly scenario: Scenario | null }) {
   const navigate = useNavigate();
+  // A view preference, like `selectedMetrics` below — off by default so
+  // the table matches its existing look until asked for.
+  const [showAge, setShowAge] = useState(false);
   // A view preference, not part of the financial plan — kept as local
   // component state rather than on the Scenario, and starts with just
   // "Net worth" selected so the chart looks the same as before this line
@@ -767,14 +788,17 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
         )}
       </div>
 
-      <Group gap={4}>
-        <Title order={4}>Year by year</Title>
-        <InfoTip>
-          Account balances on the left, then everything that came in this year under &ldquo;Income&rdquo; — taxable
-          sources in teal, non-taxable in cyan, matching the balance columns. Pension withdrawals split into their
-          own tax-free and taxable shares, with the drawdown net total and combined net income (yellow) at the far
-          right of that section. Then outgoings, tax, and net worth.
-        </InfoTip>
+      <Group justify="space-between">
+        <Group gap={4}>
+          <Title order={4}>Year by year</Title>
+          <InfoTip>
+            Account balances on the left, then everything that came in this year under &ldquo;Income&rdquo; — taxable
+            sources in teal, non-taxable in cyan, matching the balance columns. Pension withdrawals split into their
+            own tax-free and taxable shares, with the drawdown net total and combined net income (yellow) at the far
+            right of that section. Then outgoings, tax, and net worth.
+          </InfoTip>
+        </Group>
+        <Switch label="Show age" checked={showAge} onChange={(e) => setShowAge(e.currentTarget.checked)} />
       </Group>
       <Text size="sm" c="dimmed">
         Colour-coded by section — teal for taxable, cyan for non-taxable.
@@ -837,7 +861,17 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
               const netWorth = computeNetWorth(row);
               return (
                 <Table.Tr key={row.taxYear}>
-                  <Table.Td>{row.taxYear}</Table.Td>
+                  <Table.Td>
+                    {row.taxYear}
+                    {showAge && (
+                      <>
+                        <br />
+                        <Text span size="xs" c="dimmed">
+                          {ageLabel(row, scenario.household.people)}
+                        </Text>
+                      </>
+                    )}
+                  </Table.Td>
                   {pensionBalanceMetrics.map((m) => (
                     <Table.Td key={m.key} bg="var(--mantine-color-teal-light)" ta="right">
                       £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
