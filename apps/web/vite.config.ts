@@ -5,11 +5,11 @@ import { VitePWA } from "vite-plugin-pwa";
 // Static site only — no server, no SSR (SPEC.md §9.1). Offline/installable
 // PWA support is built into the shell from Phase 1 rather than retrofitted
 // later (SPEC.md §9.8, §13 Phase 1).
-export default defineConfig(({ command }) => ({
-  // GitHub Pages serves a project repo (not a username.github.io root repo)
-  // from /<repo-name>/, not /, so every asset URL needs that prefix in a
-  // production build — but the dev server still serves from / locally.
-  base: command === "build" ? "/financial-planning/" : "/",
+export default defineConfig({
+  // Served from the custom domain's root (canistop.uk/), not a
+  // /financial-planning/ subpath — no base prefix needed. Only a plain
+  // github.io project-page URL (no custom domain) would need one.
+  base: "/",
   plugins: [
     react(),
     VitePWA({
@@ -23,8 +23,7 @@ export default defineConfig(({ command }) => ({
         theme_color: "#1c7ed6",
         background_color: "#ffffff",
         display: "standalone",
-        // Relative, not "/" — resolves correctly under GitHub Pages' /financial-planning/
-        // base path without hardcoding it a second time here.
+        // Relative, not "/" — resolves correctly regardless of base path.
         start_url: ".",
         scope: ".",
         icons: [
@@ -39,4 +38,4 @@ export default defineConfig(({ command }) => ({
       },
     }),
   ],
-}));
+});
