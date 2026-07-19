@@ -14,7 +14,7 @@ import { useScenarioStore } from "../state/store.js";
  */
 export function PlanFileControls() {
   const scenario = useScenarioStore((s) => s.scenario);
-  const setScenario = useScenarioStore((s) => s.setScenario);
+  const loadScenario = useScenarioStore((s) => s.loadScenario);
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -36,7 +36,11 @@ export function PlanFileControls() {
     }
 
     setImportError(null);
-    setScenario(result.scenario);
+    // `loadScenario`, not `setScenario` — bumps `loadGeneration` too, so
+    // `Onboarding` (keyed on it in App.tsx) remounts and actually picks
+    // up the imported plan even when the import happens while already on
+    // the main page, where `navigate("/")` below is otherwise a no-op.
+    loadScenario(result.scenario);
     // Recalculated fresh against the app's current tax rules on load
     // (SPEC.md §9.2) — landing back on the main planner view shows that
     // recalculation immediately, rather than leaving the user to guess.

@@ -8,7 +8,8 @@ import { useScenarioStore } from "./state/store.js";
 
 export function App() {
   const hasHydrated = useScenarioStore((s) => s.hasHydrated);
-  const setScenario = useScenarioStore((s) => s.setScenario);
+  const loadScenario = useScenarioStore((s) => s.loadScenario);
+  const loadGeneration = useScenarioStore((s) => s.loadGeneration);
   const setHasHydrated = useScenarioStore((s) => s.setHasHydrated);
 
   useEffect(() => {
@@ -17,13 +18,13 @@ export function App() {
     // Onboarding, which is the router's default route.
     void loadSavedScenario().then((scenario) => {
       if (scenario) {
-        setScenario(scenario);
+        loadScenario(scenario);
       }
       setHasHydrated(true);
     });
 
     return subscribeAutosave();
-  }, [setScenario, setHasHydrated]);
+  }, [loadScenario, setHasHydrated]);
 
   return (
     <MantineProvider defaultColorScheme="auto">
@@ -36,7 +37,8 @@ export function App() {
         // server at all, so this works identically on any static host.
         <HashRouter>
           <Routes>
-            <Route path="/" element={<Onboarding />} />
+            {/* Keyed on loadGeneration so an "Open from file" import while already on this page forces a remount — see the doc comment on ScenarioStore.loadGeneration. */}
+            <Route path="/" element={<Onboarding key={loadGeneration} />} />
             <Route path="/tax-breakdown" element={<TaxBreakdown />} />
           </Routes>
         </HashRouter>
