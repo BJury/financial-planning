@@ -1,6 +1,6 @@
 import { Loader, MantineProvider } from "@mantine/core";
 import { useEffect } from "react";
-import { BrowserRouter, Route, Routes } from "react-router";
+import { HashRouter, Route, Routes } from "react-router";
 import { loadSavedScenario, subscribeAutosave } from "./persistence/autosave.js";
 import { Onboarding } from "./pages/Onboarding.js";
 import { TaxBreakdown } from "./pages/TaxBreakdown.js";
@@ -28,12 +28,18 @@ export function App() {
   return (
     <MantineProvider defaultColorScheme="auto">
       {hasHydrated ? (
-        <BrowserRouter>
+        // HashRouter, not BrowserRouter (SPEC.md §9.1's "no server" already
+        // means no rewrites available on GitHub Pages either) — a direct
+        // link or refresh on /tax-breakdown would 404 under BrowserRouter's
+        // history-API routing, since static hosting can't rewrite arbitrary
+        // paths back to index.html. The hash fragment never reaches the
+        // server at all, so this works identically on any static host.
+        <HashRouter>
           <Routes>
             <Route path="/" element={<Onboarding />} />
             <Route path="/tax-breakdown" element={<TaxBreakdown />} />
           </Routes>
-        </BrowserRouter>
+        </HashRouter>
       ) : (
         <Loader m="xl" />
       )}
