@@ -570,7 +570,18 @@ export function Onboarding() {
             </Group>
           }
           checked={hasSecondPerson}
-          onChange={(e) => setHasSecondPerson(e.currentTarget.checked)}
+          onChange={(e) => {
+            const checked = e.currentTarget.checked;
+            setHasSecondPerson(checked);
+            // The target's owner selector is only shown once a second
+            // person exists, so it can only still be at its single-person
+            // default ("Me") right as one gets added — safe to promote to
+            // "Joint" here so a partner's income is netted against it
+            // without the user needing to discover the owner selector.
+            if (checked && drawdownTarget.owner === PERSON_ID) {
+              setDrawdownTarget({ ...drawdownTarget, owner: "joint" });
+            }
+          }}
         />
         {hasSecondPerson && (
           <>
