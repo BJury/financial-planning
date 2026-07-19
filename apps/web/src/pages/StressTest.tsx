@@ -1,5 +1,5 @@
-import type { ProjectionResult, Scenario } from "@fp/engine";
-import { Alert, Button, Group, NumberInput, Stack, Table, Text, Title } from "@mantine/core";
+import { ageAtYear, type Person, type ProjectionResult, type Scenario } from "@fp/engine";
+import { Alert, Button, Group, NumberInput, Stack, Switch, Table, Text, Title } from "@mantine/core";
 import { useMemo, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
@@ -40,6 +40,7 @@ function averageGrowthRate(scenario: Scenario, delta: number): number {
 
 interface Shortfall {
   readonly taxYear: string;
+  readonly calendarYear: number;
   /** Position within the projection (0 = the very first year) — used to shade earlier failures more intensely than later ones, not for display. */
   readonly yearIndex: number;
 }
@@ -49,10 +50,15 @@ function firstShortfall(result: ProjectionResult): Shortfall | null {
   for (let yearIndex = 0; yearIndex < result.rows.length; yearIndex++) {
     const row = result.rows[yearIndex];
     if (row?.perPerson.some((p) => p.drawdownShortfall || p.livingExpensesShortfall)) {
-      return { taxYear: row.taxYear, yearIndex };
+      return { taxYear: row.taxYear, calendarYear: row.calendarYear, yearIndex };
     }
   }
   return null;
+}
+
+/** Each household member's age in the given calendar year — "You 68, Partner 63" once a second person exists, just "68" for one. Doesn't account for survivorship (SPEC.md §5.7.5): a variant scenario's own household composition doesn't change, so there's nothing to drop. */
+function ageLabel(calendarYear: number, people: readonly Person[]): string {
+  return people.map((p, index) => (people.length > 1 ? `${index === 0 ? "You" : "Partner"} ${ageAtYear(p.dateOfBirth, calendarYear)}` : `${ageAtYear(p.dateOfBirth, calendarYear)}`)).join(", ");
 }
 
 /**
@@ -89,6 +95,7 @@ export function StressTest() {
   const scenario = useScenarioStore((s) => s.scenario);
   const navigate = useNavigate();
 
+  const [showAge, setShowAge] = useState(false);
   const [growthMin, setGrowthMin] = useState(-4);
   const [growthMax, setGrowthMax] = useState(4);
   const [growthStep, setGrowthStep] = useState(1);
@@ -207,50 +214,56 @@ export function StressTest() {
           range or widen the step.
         </Alert>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <Table withTableBorder>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Growth ↓ / Inflation →</Table.Th>
-                {inflationDeltas.map((inflationDelta) => (
-                  <Table.Th key={inflationDelta} ta="center">
-                    {formatRate(scenario.inflationRate + inflationDelta)}
-                  </Table.Th>
-                ))}
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {grid?.map((row, rowIndex) => (
-                <Table.Tr key={growthDeltas[rowIndex]}>
-                  <Table.Th>{formatRate(averageGrowthRate(scenario, growthDeltas[rowIndex] ?? 0))}</Table.Th>
-                  {row.map((cell) => {
-                    const isBaseline = cell.growthDelta === 0 && cell.inflationDelta === 0;
-                    const bg = cell.shortfall
-                      ? shortfallCellBackground(shortfallIntensity(cell.shortfall.yearIndex, shortfallYearIndexRange))
-                      : "var(--mantine-color-teal-light)";
-                    return (
-                      <Table.Td
-                        key={cell.inflationDelta}
-                        ta="center"
-                        bg={bg}
-                        style={isBaseline ? { outline: "2px solid var(--mantine-color-blue-6)", outlineOffset: -2 } : undefined}
-                      >
-                        {cell.shortfall?.taxYear ?? "OK"}
-                      </Table.Td>
-                    );
-                  })}
+        <>
+          <Group justify="flex-end">
+            <Switch label="Show age instead of year" checked={showAge} onChange={(e) => setShowAge(e.currentTarget.checked)} />
+          </Group>
+          <div style={{ overflowX: "auto" }}>
+            <Table withTableBorder>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Growth ↓ / Inflation →</Table.Th>
+                  {inflationDeltas.map((inflationDelta) => (
+                    <Table.Th key={inflationDelta} ta="center">
+                      {formatRate(scenario.inflationRate + inflationDelta)}
+                    </Table.Th>
+                  ))}
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </div>
+              </Table.Thead>
+              <Table.Tbody>
+                {grid?.map((row, rowIndex) => (
+                  <Table.Tr key={growthDeltas[rowIndex]}>
+                    <Table.Th>{formatRate(averageGrowthRate(scenario, growthDeltas[rowIndex] ?? 0))}</Table.Th>
+                    {row.map((cell) => {
+                      const isBaseline = cell.growthDelta === 0 && cell.inflationDelta === 0;
+                      const bg = cell.shortfall
+                        ? shortfallCellBackground(shortfallIntensity(cell.shortfall.yearIndex, shortfallYearIndexRange))
+                        : "var(--mantine-color-teal-light)";
+                      return (
+                        <Table.Td
+                          key={cell.inflationDelta}
+                          ta="center"
+                          bg={bg}
+                          style={isBaseline ? { outline: "2px solid var(--mantine-color-blue-6)", outlineOffset: -2 } : undefined}
+                        >
+                          {cell.shortfall ? (showAge ? ageLabel(cell.shortfall.calendarYear, scenario.household.people) : cell.shortfall.taxYear) : "OK"}
+                        </Table.Td>
+                      );
+                    })}
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </div>
+        </>
       )}
 
       <Text size="xs" c="dimmed">
-        The outlined cell is your plan as it stands today (no change on either axis). A cell shows the first tax year
-        a drawdown target or living expenses weren&rsquo;t fully covered, or &ldquo;OK&rdquo; if the plan survives
-        the whole projection under that combination — shaded a brighter red the earlier that failure happens, so the
-        worst combinations stand out at a glance.
+        The outlined cell is your plan as it stands today (no change on either axis). A cell shows the first tax
+        year — or, with &ldquo;Show age instead of year&rdquo; on, your age(s) that year — a drawdown target or
+        living expenses weren&rsquo;t fully covered, or &ldquo;OK&rdquo; if the plan survives the whole projection
+        under that combination — shaded a brighter red the earlier that failure happens, so the worst combinations
+        stand out at a glance.
       </Text>
     </Stack>
   );
