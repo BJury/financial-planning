@@ -13,6 +13,7 @@ import { Alert, Button, Card, Group, Select, Stack, Table, Text, Title } from "@
 import { useMemo, useState, type ReactNode } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
+import { InfoTip } from "../components/InfoTip.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
 import { formatMoney, formatPercent } from "../format.js";
 import { computeProjection } from "../projection.js";
@@ -115,8 +116,7 @@ export function TaxBreakdown() {
       </Group>
 
       <Alert color="blue" variant="light">
-        Exactly how this year&rsquo;s tax was calculated, for cross-checking against the year-by-year table on the
-        projection page — every total here sums up from the same figures shown there (SPEC.md §4 journey 5).
+        Exactly how this year&rsquo;s tax was calculated — every total here matches the year-by-year table.
       </Alert>
 
       <Select
@@ -131,23 +131,22 @@ export function TaxBreakdown() {
         <Alert color="orange" variant="light">
           {row.survivorshipEvents.map((event) => (
             <Text size="sm" key={event.deceasedPersonId}>
-              A modelling assumption: from this year, the deceased partner&rsquo;s GIA/cash balances are assumed
-              inherited by the survivor — actual treatment depends on the will/estate, and pension death-benefit
-              rules aren&rsquo;t modelled at all (SPEC.md §5.7.5).
+              Modelling assumption: the deceased partner&rsquo;s GIA/cash balances are assumed inherited by the
+              survivor — actual treatment depends on the will/estate. Pension death benefits aren&rsquo;t modelled.
             </Text>
           ))}
         </Alert>
       )}
 
       {drawdownComparison && (
-        <Section title="Household drawdown split (SPEC.md §5.7.4, §4 journey 6)">
+        <Section title="Household drawdown split">
           <KeyValue label={`Total tax this year — ${STRATEGY_LABELS[drawdownComparison.currentStrategy]}`} amount={drawdownComparison.currentTax} bold />
           {drawdownComparison.currentStrategy !== "even" && (
             <>
               <KeyValue label="Total tax this year — even split instead" amount={drawdownComparison.evenTax} />
               <Text size="sm" c={drawdownComparison.saving > 0 ? "teal.7" : "dimmed"}>
                 {drawdownComparison.saving > 0
-                  ? `The current split saves ${formatMoney(drawdownComparison.saving)} versus an even split, by routing more of the target through whichever of you has cheaper unused allowance.`
+                  ? `Saves ${formatMoney(drawdownComparison.saving)} versus an even split.`
                   : "No tax difference between the two splits this year."}
               </Text>
             </>
@@ -234,13 +233,13 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
             <KeyValue
               label="Relief-at-source contribution, grossed up"
               amount={person.grossPensionContribution}
-              description="This extends the basic/higher rate band ceilings — it's why the Income Tax bands above may show more taxed at a lower rate than the gross income alone would suggest."
+              info="This extends your basic/higher rate band ceilings, so more income above may show as taxed at a lower rate than expected."
             />
           )}
           <KeyValue label="Total pension input this year (the Annual Allowance test figure)" amount={person.pensionInputAmount} />
           {person.mpaaActive && (
             <Text size="sm" c="orange.7">
-              ⚠ Money Purchase Annual Allowance (MPAA) active — you flexibly accessed a pension in a previous year, so contributions to any of your pensions are now capped at a lower allowance, with no carry-forward available against it.
+              ⚠ Money Purchase Annual Allowance active — future pension contributions are capped at a lower allowance, with no carry-forward.
             </Text>
           )}
           {person.annualAllowanceCharge > 0 && (
@@ -279,7 +278,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
           <KeyValue
             label="State Pension income"
             amount={person.statePensionIncome}
-            description="Paid gross — already included in the Income Tax bands above, taxed at your marginal rate alongside earned/pension income, but never subject to National Insurance."
+            info="Paid gross, taxed at your marginal rate alongside earned/pension income — never subject to National Insurance."
           />
         </Section>
       )}
@@ -289,13 +288,13 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
           <KeyValue
             label="Net rental profit"
             amount={person.rentalProfitIncome}
-            description="Gross rental income minus whichever of actual letting costs or the Property Income Allowance is larger — already included in the Income Tax bands above, taxed at your marginal rate alongside earned/pension income."
+            info="Gross rental income minus letting costs or the Property Income Allowance, whichever is larger — taxed at your marginal rate."
           />
           {person.mortgageInterestCredit > 0 && (
             <KeyValue
               label="Mortgage interest tax credit"
               amount={person.mortgageInterestCredit}
-              description="Mortgage interest on a rental property isn't deducted from rental profit before tax — instead you get this flat-rate credit (interest × basic rate) against your overall tax bill, regardless of your own marginal rate."
+              info="Mortgage interest isn't deducted from rental profit before tax — instead you get this flat-rate credit against your overall tax bill."
             />
           )}
         </Section>
@@ -308,13 +307,13 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
             <KeyValue
               label="Capital Gains Tax"
               amount={person.propertySaleCapitalGainsTax}
-              description="Fully exempt — Private Residence Relief, assuming this was your (or your household's) only/main home for the whole time you owned it."
+              info="Fully exempt under Private Residence Relief — assumes this was your only/main home for the whole time you owned it."
             />
           ) : (
             <KeyValue
               label="Capital Gains Tax"
               amount={person.propertySaleCapitalGainsTax}
-              description="At the residential property rate, after your CGT Annual Exempt Amount (shared with any other capital gains this year, e.g. a GIA withdrawal)."
+              info="At the residential property rate, after your CGT Annual Exempt Amount (shared with any other capital gains this year, e.g. a GIA withdrawal)."
             />
           )}
           <KeyValue label="Net proceeds (after selling costs, mortgage redemption, and CGT)" amount={person.propertySaleNetProceeds} bold />
@@ -367,7 +366,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
             <KeyValue
               label="Pension/ISA/GIA/cash contributions from your own pocket"
               amount={person.accountContributions}
-              description="What you personally paid in — a relief-at-source pension's basic-rate top-up isn't counted here, since that's not your own money."
+              info="What you personally paid in — a relief-at-source pension's basic-rate top-up isn't counted, since that's not your own money."
             />
           )}
           {person.surplusSweptToIsa > 0 && (
@@ -380,7 +379,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
             <KeyValue
               label="Shortfall funded from cash/ISA/GIA savings"
               amount={person.shortfallFundedFromSavings}
-              description="Outgoings exceeded income this year, so this was drawn from your own liquid savings (cash first, then ISA, then GIA) to cover it — never a pension."
+              info="Outgoings exceeded income, so this was drawn from your own liquid savings (cash first, then ISA, then GIA) — never a pension."
             />
           )}
           {person.shortfallCapitalGainsTax > 0 && (
@@ -417,19 +416,25 @@ function KeyValue({
   label,
   amount,
   description,
+  info,
   bold,
 }: {
   readonly label: string;
   readonly amount: Pence;
   readonly description?: string;
+  /** Extra detail available on click via an `InfoTip`, rather than always-visible `description` text — for the "why", not the headline fact. */
+  readonly info?: ReactNode;
   readonly bold?: boolean;
 }) {
   return (
     <div>
       <Group justify="space-between">
-        <Text size="sm" fw={bold ? 700 : 400}>
-          {label}
-        </Text>
+        <Group gap={4}>
+          <Text size="sm" fw={bold ? 700 : 400}>
+            {label}
+          </Text>
+          {info && <InfoTip>{info}</InfoTip>}
+        </Group>
         <Text size="sm" fw={bold ? 700 : 400}>
           {formatMoney(amount)}
         </Text>

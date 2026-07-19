@@ -2,8 +2,15 @@ import { addPence, maxPence, minPence, subtractPence, zeroPence, type Pence } fr
 import type { CapitalGainsRates } from "../tax/capitalGainsTax.js";
 import { solveDrawdown, type DrawdownBucketAmount, type DrawdownSolverInputs, type DrawdownSolverResult } from "./solveDrawdown.js";
 
-/** One person's account state/tax position for the household solver — the same shape `DrawdownSolverInputs` needs, minus the target (the household solver decides each person's own target). */
-export type HouseholdDrawdownPersonState = Omit<DrawdownSolverInputs, "targetNetAmount" | "capitalGainsRates">;
+/**
+ * One person's account state/tax position for the household solver — the
+ * same shape `DrawdownSolverInputs` needs, minus the target and the
+ * taxable/non-taxable preference (the household solver decides each
+ * person's own target *and* their proportional share of the household's
+ * one combined preference figure, the same way it already decides their
+ * target).
+ */
+export type HouseholdDrawdownPersonState = Omit<DrawdownSolverInputs, "targetNetAmount" | "capitalGainsRates" | "taxablePreferenceAmount">;
 
 export interface HouseholdDrawdownPerson<TId> {
   readonly id: TId;
@@ -104,15 +111,32 @@ function solveEvenOrCustom<TId>(
   people: readonly [HouseholdDrawdownPerson<TId>, HouseholdDrawdownPerson<TId>],
   share: number,
   capitalGainsRates: CapitalGainsRates,
+  taxablePreferenceAmount: Pence | undefined,
 ): HouseholdDrawdownSolverResult<TId> {
   const [personA, personB] = people;
   // Person B gets the exact remainder (never independently rounded), so
   // the two targets always sum back to `target` — this engine's usual
-  // exact-by-construction split pattern (e.g. `splitByOwnership`).
+  // exact-by-construction split pattern (e.g. `splitByOwnership`). The
+  // household's one combined taxable/non-taxable preference figure (if
+  // any) is split the same way, by the same `share` — each person's
+  // proportional slice of it, matching their own proportional slice of
+  // the target.
   const targetA = Math.round(target * share) as Pence;
   const targetB = subtractPence(target, targetA);
-  const resultA = solveDrawdown({ ...personA.state, targetNetAmount: targetA, capitalGainsRates });
-  const resultB = solveDrawdown({ ...personB.state, targetNetAmount: targetB, capitalGainsRates });
+  const preferenceA = taxablePreferenceAmount === undefined ? undefined : (Math.round(taxablePreferenceAmount * share) as Pence);
+  const preferenceB = taxablePreferenceAmount === undefined ? undefined : subtractPence(taxablePreferenceAmount, preferenceA ?? zeroPence());
+  const resultA = solveDrawdown({
+    ...personA.state,
+    targetNetAmount: targetA,
+    capitalGainsRates,
+    ...(preferenceA !== undefined ? { taxablePreferenceAmount: preferenceA } : {}),
+  });
+  const resultB = solveDrawdown({
+    ...personB.state,
+    targetNetAmount: targetB,
+    capitalGainsRates,
+    ...(preferenceB !== undefined ? { taxablePreferenceAmount: preferenceB } : {}),
+  });
   return combine([
     { id: personA.id, result: resultA },
     { id: personB.id, result: resultB },
@@ -159,47 +183,69 @@ export function solveHouseholdDrawdown<TId>(
   strategy: HouseholdDrawdownStrategy,
   people: readonly HouseholdDrawdownPerson<TId>[],
   capitalGainsRates: CapitalGainsRates,
+  /**
+   * Optional — the household's one combined taxable/non-taxable
+   * preference figure (`catalog/incomeSources/targetDrawdownIncome.ts`'s
+   * `taxableDrawdownPreference` field, for a joint target). Split
+   * proportionally across every `solveDrawdown` call this function makes
+   * for each of `targetNetAmount`'s own sub-amounts (`preferenceFor`
+   * below) — deliberately *not* woven into the `"optimised"` strategy's
+   * own who-draws-first tax-efficiency comparison, which stays exactly
+   * as tax-driven as before; the preference only biases *how* whatever
+   * each person ends up drawing is sourced, never *who* draws it.
+   */
+  taxablePreferenceAmount?: Pence,
 ): HouseholdDrawdownSolverResult<TId> {
   const [personA, personB] = people;
   if (!personA) {
     return { perPerson: [], totalNetAchieved: zeroPence(), totalTaxCost: zeroPence(), shortfall: targetNetAmount > 0 };
   }
+
+  const preferenceFor = (amount: Pence): { taxablePreferenceAmount: Pence } | Record<string, never> => {
+    if (taxablePreferenceAmount === undefined || targetNetAmount <= 0) return {};
+    return { taxablePreferenceAmount: Math.round((taxablePreferenceAmount * amount) / targetNetAmount) as Pence };
+  };
+
   if (!personB) {
-    const result = solveDrawdown({ ...personA.state, targetNetAmount, capitalGainsRates });
+    const result = solveDrawdown({ ...personA.state, targetNetAmount, capitalGainsRates, ...preferenceFor(targetNetAmount) });
     return combine([{ id: personA.id, result }]);
   }
 
   if (strategy.kind === "even") {
-    return solveEvenOrCustom(targetNetAmount, [personA, personB], 0.5, capitalGainsRates);
+    return solveEvenOrCustom(targetNetAmount, [personA, personB], 0.5, capitalGainsRates, taxablePreferenceAmount);
   }
   if (strategy.kind === "custom") {
-    return solveEvenOrCustom(targetNetAmount, [personA, personB], strategy.firstPersonShare, capitalGainsRates);
+    return solveEvenOrCustom(targetNetAmount, [personA, personB], strategy.firstPersonShare, capitalGainsRates, taxablePreferenceAmount);
   }
 
-  // "optimised": phase 1 — free tier for both.
-  const probeA = solveDrawdown({ ...personA.state, targetNetAmount, capitalGainsRates });
-  const probeB = solveDrawdown({ ...personB.state, targetNetAmount, capitalGainsRates });
+  // "optimised": phase 1 — free tier for both. The probes stay
+  // preference-aware too (rather than always tax-optimised) — if the
+  // preference is biasing money away from the free tier (e.g. more
+  // through pension than the 0%-cost PA band alone would use), the
+  // free-capacity estimate should reflect that, not overstate it.
+  const probeA = solveDrawdown({ ...personA.state, targetNetAmount, capitalGainsRates, ...preferenceFor(targetNetAmount) });
+  const probeB = solveDrawdown({ ...personB.state, targetNetAmount, capitalGainsRates, ...preferenceFor(targetNetAmount) });
   const freeA = minPence(freeCapacityDrawn(probeA), targetNetAmount);
   let remaining = subtractPence(targetNetAmount, freeA);
   const freeB = minPence(freeCapacityDrawn(probeB), remaining);
   remaining = subtractPence(remaining, freeB);
 
-  let resultA = freeA > 0 ? solveDrawdown({ ...personA.state, targetNetAmount: freeA, capitalGainsRates }) : EMPTY_RESULT;
-  let resultB = freeB > 0 ? solveDrawdown({ ...personB.state, targetNetAmount: freeB, capitalGainsRates }) : EMPTY_RESULT;
+  let resultA = freeA > 0 ? solveDrawdown({ ...personA.state, targetNetAmount: freeA, capitalGainsRates, ...preferenceFor(freeA) }) : EMPTY_RESULT;
+  let resultB = freeB > 0 ? solveDrawdown({ ...personB.state, targetNetAmount: freeB, capitalGainsRates, ...preferenceFor(freeB) }) : EMPTY_RESULT;
   let stateA = applyResultToState(personA.state, resultA);
   let stateB = applyResultToState(personB.state, resultB);
 
   // Phase 2 — whichever person is cheaper for the remainder draws first.
   if (remaining > 0) {
-    const soloA = solveDrawdown({ ...stateA, targetNetAmount: remaining, capitalGainsRates });
-    const soloB = solveDrawdown({ ...stateB, targetNetAmount: remaining, capitalGainsRates });
+    const soloA = solveDrawdown({ ...stateA, targetNetAmount: remaining, capitalGainsRates, ...preferenceFor(remaining) });
+    const soloB = solveDrawdown({ ...stateB, targetNetAmount: remaining, capitalGainsRates, ...preferenceFor(remaining) });
 
     if (costPerNetPound(soloA) <= costPerNetPound(soloB)) {
       resultA = mergeDrawdownResults(resultA, soloA);
       stateA = applyResultToState(stateA, soloA);
       const stillNeeded = maxPence(subtractPence(remaining, soloA.netAchieved), zeroPence());
       if (stillNeeded > 0) {
-        const soloB2 = solveDrawdown({ ...stateB, targetNetAmount: stillNeeded, capitalGainsRates });
+        const soloB2 = solveDrawdown({ ...stateB, targetNetAmount: stillNeeded, capitalGainsRates, ...preferenceFor(stillNeeded) });
         resultB = mergeDrawdownResults(resultB, soloB2);
       }
     } else {
@@ -207,7 +253,7 @@ export function solveHouseholdDrawdown<TId>(
       stateB = applyResultToState(stateB, soloB);
       const stillNeeded = maxPence(subtractPence(remaining, soloB.netAchieved), zeroPence());
       if (stillNeeded > 0) {
-        const soloA2 = solveDrawdown({ ...stateA, targetNetAmount: stillNeeded, capitalGainsRates });
+        const soloA2 = solveDrawdown({ ...stateA, targetNetAmount: stillNeeded, capitalGainsRates, ...preferenceFor(stillNeeded) });
         resultA = mergeDrawdownResults(resultA, soloA2);
       }
     }

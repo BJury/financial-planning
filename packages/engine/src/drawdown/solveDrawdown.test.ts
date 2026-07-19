@@ -304,3 +304,78 @@ describe("solveDrawdown — cash and GIA", () => {
     expect(result.giaGrossWithdrawn).toBe(poundsToPence(2000));
   });
 });
+
+describe("solveDrawdown — taxable/non-taxable preference (taxablePreferenceAmount)", () => {
+  it("draws exactly the preferred amount from pension and the rest from ISA, when both have ample capacity", () => {
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(20000),
+      taxablePreferenceAmount: poundsToPence(8000),
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(500000),
+      lumpSumAllowanceRemaining: ampleLsa,
+      isaBalance: poundsToPence(20000),
+      ...noGiaOrCash,
+    });
+
+    // £8,000 is well within the £12,570 Personal Allowance — entirely tax-free, so gross = net.
+    expect(result.pensionGrossWithdrawn).toBe(poundsToPence(8000));
+    expect(result.incomeTaxCost).toBe(0);
+    expect(result.isaGrossWithdrawn).toBe(poundsToPence(12000));
+    expect(result.netAchieved).toBe(poundsToPence(20000));
+    expect(result.shortfall).toBe(false);
+  });
+
+  it("falls back to ISA once the pension balance runs short of the taxable preference", () => {
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(20000),
+      taxablePreferenceAmount: poundsToPence(8000),
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(3000), // less than the £8,000 preferred
+      lumpSumAllowanceRemaining: ampleLsa,
+      isaBalance: poundsToPence(50000),
+      ...noGiaOrCash,
+    });
+
+    // Pension is fully drained (all of it tax-free, within the PA) — the £5,000 it couldn't
+    // supply, plus the rest of the target, is covered by the ISA instead.
+    expect(result.pensionGrossWithdrawn).toBe(poundsToPence(3000));
+    expect(result.isaGrossWithdrawn).toBe(poundsToPence(17000));
+    expect(result.netAchieved).toBe(poundsToPence(20000));
+    expect(result.shortfall).toBe(false);
+  });
+
+  it("falls back to pension once ISA/cash/GIA can't cover the non-taxable share", () => {
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(20000),
+      taxablePreferenceAmount: poundsToPence(5000), // a small preferred pension share — most should come from ISA
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(500000),
+      lumpSumAllowanceRemaining: ampleLsa,
+      isaBalance: poundsToPence(2000), // far short of the £15,000 non-taxable share
+      ...noGiaOrCash,
+    });
+
+    // The ISA is fully drained, and pension makes up the rest regardless of the £5,000 preference.
+    expect(result.isaGrossWithdrawn).toBe(poundsToPence(2000));
+    expect(result.pensionGrossWithdrawn).toBeGreaterThan(poundsToPence(5000));
+    expect(result.netAchieved).toBe(poundsToPence(20000));
+    expect(result.shortfall).toBe(false);
+  });
+
+  it("caps the taxable preference at the target itself — never asks pension for more than what's actually needed", () => {
+    const result = solveDrawdown({
+      targetNetAmount: poundsToPence(5000),
+      taxablePreferenceAmount: poundsToPence(20000), // far more than the target needs
+      bandHeadroom: headroomWithNoOtherIncome(),
+      pensionBalance: poundsToPence(500000),
+      lumpSumAllowanceRemaining: ampleLsa,
+      isaBalance: poundsToPence(50000),
+      ...noGiaOrCash,
+    });
+
+    expect(result.pensionGrossWithdrawn).toBe(poundsToPence(5000));
+    expect(result.isaGrossWithdrawn).toBe(0);
+    expect(result.netAchieved).toBe(poundsToPence(5000));
+    expect(result.shortfall).toBe(false);
+  });
+});

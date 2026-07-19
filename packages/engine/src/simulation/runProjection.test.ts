@@ -946,6 +946,89 @@ describe("runProjection — a drawdown target represents total desired income, a
   });
 });
 
+describe("runProjection — drawdownFromPension/drawdownFromIsa report the actual per-source split", () => {
+  it("reports the full amount under drawdownFromPension when the target is sourced entirely from the Personal Allowance band", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" },
+      accounts: [
+        { kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(500000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() },
+        { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(20000), annualGrowthRate: 0 },
+      ],
+      incomeSources: [{ id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(10000), startAge: 65 } }],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const p = result.rows[0]?.perPerson[0];
+    expect(p?.drawdownFromIsa).toBe(0);
+    expect(p?.drawdownFromPension).toBeGreaterThan(0);
+    expect(p?.drawdownFromPension).toBe(p?.drawdownGrossWithdrawn);
+  });
+
+  it("splits drawdownFromPension/drawdownFromIsa to match the taxable/non-taxable preference", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" },
+      accounts: [{ kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(500000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() }],
+      incomeSources: [
+        {
+          id: "drawdown1",
+          type: "targetDrawdownIncome",
+          owner: PERSON_ID,
+          config: { targetNetAnnualIncome: poundsToPence(20000), startAge: 65, taxableDrawdownPreference: poundsToPence(8000) },
+        },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+    // No ISA account at all — the £12,000 non-taxable share has nowhere to go, so it falls back to pension.
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const p = result.rows[0]?.perPerson[0];
+    expect(p?.drawdownFromIsa).toBe(0);
+    expect(p?.drawdownFromPension).toBe(p?.drawdownGrossWithdrawn);
+    expect(p?.drawdownNetAchieved).toBe(poundsToPence(20000));
+  });
+
+  it("sums drawdownFromPension + drawdownFromIsa + drawdownFromCash + drawdownFromGia to exactly drawdownGrossWithdrawn", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" },
+      accounts: [
+        { kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(500000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() },
+        { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(5000), annualGrowthRate: 0 },
+        { kind: "cash", id: "cash1", owner: PERSON_ID, currentBalance: poundsToPence(5000), annualGrowthRate: 0 },
+        { kind: "gia", id: "gia1", owner: PERSON_ID, currentBalance: poundsToPence(5000), costBasis: poundsToPence(2000), annualGrowthRate: 0, annualDividendYield: 0 },
+      ],
+      incomeSources: [{ id: "drawdown1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 65 } }],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    const p = result.rows[0]?.perPerson[0];
+    const summed = sumPence([
+      p?.drawdownFromPension ?? zeroPence(),
+      p?.drawdownFromIsa ?? zeroPence(),
+      p?.drawdownFromCash ?? zeroPence(),
+      p?.drawdownFromGia ?? zeroPence(),
+    ]);
+    expect(summed).toBe(p?.drawdownGrossWithdrawn);
+    // ISA, cash, and GIA are all fully drawn (£5,000 each, £15,000 combined) — GIA's gain fraction (60%)
+    // against the CGT Annual Exempt Amount happens to exactly cover its whole £5,000 balance tax-free.
+    expect(p?.drawdownFromIsa).toBe(poundsToPence(5000));
+    expect(p?.drawdownFromCash).toBe(poundsToPence(5000));
+    expect(p?.drawdownFromGia).toBe(poundsToPence(5000));
+  });
+});
+
 describe("runProjection — drawdown draws from GIA and cash once pension/ISA are exhausted", () => {
   function makeFullAccountDrawdownScenario(targetNetAnnualIncome: number): Scenario {
     const person: Person = { id: PERSON_ID, dateOfBirth: "1956-01-01", targetRetirementAge: 65, projectionEndAge: 95 }; // age 70 in 2026

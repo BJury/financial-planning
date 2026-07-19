@@ -33,6 +33,18 @@ export interface TargetDrawdownIncomeConfig {
   readonly householdSplitStrategy?: HouseholdDrawdownSplitStrategy;
   /** Only used when `householdSplitStrategy` is `"custom"` — the first household member's share of the target, as a 0-1 fraction (SPEC.md §9.6's "percentage" input convention: stored as a fraction, displayed as %). */
   readonly customFirstPersonShare?: number;
+  /**
+   * Optional — how much of the target should preferentially come from
+   * taxable sources (in practice, almost always the pension) each year,
+   * in today's money. Left unset, the drawdown solver keeps finding the
+   * single most tax-efficient mix automatically, exactly as before this
+   * field existed. Set it to steer more (or less) through the pension
+   * instead — e.g. to preserve it for later, or run it down faster. It's
+   * a soft steer, not a hard split: whichever side (taxable or
+   * non-taxable) runs out of capacity first, the other one is used for
+   * the shortfall regardless (`drawdown/solveDrawdown.ts`).
+   */
+  readonly taxableDrawdownPreference?: Pence;
 }
 
 const fields: readonly CatalogFieldSchema<TargetDrawdownIncomeConfig>[] = [
@@ -51,6 +63,7 @@ const fields: readonly CatalogFieldSchema<TargetDrawdownIncomeConfig>[] = [
     ],
   },
   { key: "customFirstPersonShare", label: "Your share", input: "percentage", required: false },
+  { key: "taxableDrawdownPreference", label: "Amount to draw from pension (taxable) each year", input: "currency", required: false },
 ];
 
 function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly ValidationIssue[] {
@@ -60,7 +73,7 @@ function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly Valida
     issues.push({
       field: "targetNetAnnualIncome",
       tier: "hardBlock",
-      message: "Target net annual income cannot be negative.",
+      message: "Target total annual income cannot be negative.",
     });
   }
 
@@ -69,6 +82,14 @@ function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly Valida
       field: "endAge",
       tier: "hardBlock",
       message: "End age must be after the start age.",
+    });
+  }
+
+  if (config.taxableDrawdownPreference !== undefined && isNegative(config.taxableDrawdownPreference)) {
+    issues.push({
+      field: "taxableDrawdownPreference",
+      tier: "hardBlock",
+      message: "Amount to draw from pension cannot be negative.",
     });
   }
 
@@ -124,8 +145,7 @@ function calculateForYear(
 export const targetDrawdownIncomeDefinition: IncomeSourceDefinition<TargetDrawdownIncomeConfig> = {
   type: "targetDrawdownIncome",
   displayName: "Retirement income target",
-  description:
-    "The total income you want each year in retirement — salary, State Pension, rental profit, and any other automatic income all count first, and drawdown fills only the remaining gap, pooling every pension, ISA, cash, and GIA account this applies to for the most tax-efficient mix of withdrawals. Reaching this figure counts as spent, so there's no need for a separate Living Expenses entry unless your actual spending genuinely differs from it",
+  description: "Your total desired income each year in retirement, from every source combined",
   taxCategory: "pensionIncome",
   fields,
   validate,

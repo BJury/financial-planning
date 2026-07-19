@@ -78,6 +78,17 @@ describe("targetDrawdownIncomeDefinition.validate", () => {
     const issues = targetDrawdownIncomeDefinition.validate(config);
     expect(issues.some((i) => i.field === "endAge" && i.tier === "hardBlock")).toBe(true);
   });
+
+  it("has no issues when taxableDrawdownPreference is a sensible positive amount", () => {
+    const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: poundsToPence(30000), startAge: 67, taxableDrawdownPreference: poundsToPence(10000) };
+    expect(targetDrawdownIncomeDefinition.validate(config)).toEqual([]);
+  });
+
+  it("hard-blocks a negative taxableDrawdownPreference", () => {
+    const config: TargetDrawdownIncomeConfig = { targetNetAnnualIncome: poundsToPence(30000), startAge: 67, taxableDrawdownPreference: pence(-100) };
+    const issues = targetDrawdownIncomeDefinition.validate(config);
+    expect(issues.some((i) => i.field === "taxableDrawdownPreference" && i.tier === "hardBlock")).toBe(true);
+  });
 });
 
 describe("targetDrawdownIncomeDefinition registry metadata", () => {

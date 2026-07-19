@@ -30,6 +30,7 @@ import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
 import { CatalogPicker } from "../catalog-ui/CatalogPicker.js";
 import { AgeOrDateInput, isoDateFromAge } from "../components/AgeOrDateInput.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
+import { InfoTip } from "../components/InfoTip.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
 import { ProjectionResults } from "../components/ProjectionResults.js";
 import { useScenarioStore } from "../state/store.js";
@@ -121,7 +122,13 @@ function createDefaultConfig(fields: readonly CatalogFieldSchema<unknown>[]): Re
   for (const field of fields) {
     switch (field.input) {
       case "currency":
-        config[field.key] = pence(0);
+        // An *optional* currency field (e.g. the drawdown target's
+        // taxable/non-taxable preference) must start genuinely unset, not
+        // £0 — the two mean completely different things to the engine
+        // (£0 is itself a deliberate, meaningful choice: "draw nothing
+        // from this side"), unlike a required field, where £0 really is
+        // just "nothing entered yet".
+        config[field.key] = field.required ? pence(0) : undefined;
         break;
       case "percentage":
       case "growthRate":
@@ -538,8 +545,12 @@ export function Onboarding() {
           onChange={(e) => setDateOfBirth(e.currentTarget.value)}
         />
         <NumberInput
-          label="State Pension age"
-          description="From gov.uk's 'Check your State Pension forecast' page, if you know it — defaults to 67 otherwise (SPEC.md §3.3)"
+          label={
+            <Group gap={4} wrap="nowrap">
+              <span>State Pension age</span>
+              <InfoTip>Find this on gov.uk&rsquo;s &ldquo;Check your State Pension forecast&rdquo; page. Defaults to 67 if left blank.</InfoTip>
+            </Group>
+          }
           value={statePensionAge}
           onChange={(v) => setStatePensionAge(typeof v === "number" ? v : DEFAULT_STATE_PENSION_AGE)}
         />
@@ -548,8 +559,12 @@ export function Onboarding() {
       <Stack gap="sm">
         <Title order={4}>Household</Title>
         <Switch
-          label="Plan for two people"
-          description="Adds a second person — every account and cash flow below can then be owned by either of you, or jointly (SPEC.md §3.1)"
+          label={
+            <Group gap={4} wrap="nowrap">
+              <span>Plan for two people</span>
+              <InfoTip>Adds a second person — every account and cash flow can then be owned by either of you, or jointly.</InfoTip>
+            </Group>
+          }
           checked={hasSecondPerson}
           onChange={(e) => setHasSecondPerson(e.currentTarget.checked)}
         />
@@ -564,13 +579,17 @@ export function Onboarding() {
             />
             <NumberInput
               label="Their State Pension age"
-              description="Defaults to 67 if you don't know it (SPEC.md §3.3)"
+              description="Defaults to 67 if you don't know it"
               value={personBStatePensionAge}
               onChange={(v) => setPersonBStatePensionAge(typeof v === "number" ? v : DEFAULT_STATE_PENSION_AGE)}
             />
             <Select
-              label="Relationship status"
-              description="Gates Marriage Allowance and CGT-free interspousal transfers (SPEC.md §3.1) — married/civil partnership only"
+              label={
+                <Group gap={4} wrap="nowrap">
+                  <span>Relationship status</span>
+                  <InfoTip>Married/civil partnership households can access Marriage Allowance and tax-free asset transfers between partners.</InfoTip>
+                </Group>
+              }
               data={[
                 { value: "unmarried", label: "Unmarried (co-habiting)" },
                 { value: "marriedOrCivilPartnership", label: "Married / civil partnership" },
@@ -580,8 +599,12 @@ export function Onboarding() {
             />
             {relationshipStatus === "marriedOrCivilPartnership" && (
               <Select
-                label="Marriage Allowance"
-                description="One partner can transfer 10% of their Personal Allowance to the other, if eligible each year (SPEC.md §5.2) — leave blank for no election"
+                label={
+                  <Group gap={4} wrap="nowrap">
+                    <span>Marriage Allowance</span>
+                    <InfoTip>One partner can transfer 10% of their Personal Allowance to the other each year, if eligible. Leave blank for no election.</InfoTip>
+                  </Group>
+                }
                 data={[
                   { value: "me", label: "I transfer to them" },
                   { value: "partner", label: "They transfer to me" },
@@ -598,16 +621,24 @@ export function Onboarding() {
       <Stack gap="sm">
         <Title order={4}>Assumptions</Title>
         <NumberInput
-          label="Inflation rate"
-          description="Used to convert every growth rate you enter below from the nominal figure you'd naturally quote into today's-money terms (SPEC.md §3.10, §5.8) — you never need to do that conversion yourself."
+          label={
+            <Group gap={4} wrap="nowrap">
+              <span>Inflation rate</span>
+              <InfoTip>Converts every growth rate you enter into today&rsquo;s-money terms automatically — enter the nominal rate you&rsquo;d naturally quote.</InfoTip>
+            </Group>
+          }
           rightSection="%"
           decimalScale={2}
           value={inflationRate * 100}
           onChange={(v) => setInflationRate(typeof v === "number" ? v / 100 : 0)}
         />
         <NumberInput
-          label="Projection length (years)"
-          description="Shortens the projection to a more readable window — it can never run longer than everyone's own assumed lifespan (SPEC.md §3.2), only shorter."
+          label={
+            <Group gap={4} wrap="nowrap">
+              <span>Projection length (years)</span>
+              <InfoTip>Shortens the table/chart to a more readable window — it can never run longer than everyone&rsquo;s own assumed lifespan, only shorter.</InfoTip>
+            </Group>
+          }
           min={1}
           value={projectionYears}
           onChange={(v) => setProjectionYears(typeof v === "number" ? v : DEFAULT_PROJECTION_YEARS)}
@@ -628,8 +659,7 @@ export function Onboarding() {
       <Stack gap="sm">
         <Title order={4}>Accounts</Title>
         <Text size="sm" c="dimmed">
-          Add an account for each pension, ISA, General Investment Account, or cash savings pot you hold — none are
-          required, and you can add more than one of each.
+          Add each pension, ISA, GIA, or cash account you hold — none are required.
         </Text>
 
         {pensionAccounts.map((account) => (
@@ -696,7 +726,7 @@ export function Onboarding() {
                   owner: PERSON_ID,
                   currentBalance: 0,
                   annualGrowthRate: 0,
-                  annualChargeRate: 0.005,
+                  annualChargeRate: 0.0005,
                   employerAnnualContribution: 0,
                 },
               ])
@@ -921,7 +951,10 @@ function DrawdownTargetSection({
   // in or out any more (`simulation/runProjection.ts`'s `discoverAccountIds`
   // does the discovery). Household-split-strategy fields only apply to a
   // joint target, and `customFirstPersonShare` only once "custom" is picked.
+  // `taxableDrawdownPreference` renders in its own dedicated card below,
+  // not in this main field list — see "How to draw it down".
   const fields = definition.fields.filter((field) => {
+    if (field.key === "taxableDrawdownPreference") return false;
     const splitStrategyFields = ["householdSplitStrategy", "customFirstPersonShare"];
     if (!isJoint && splitStrategyFields.includes(field.key)) return false;
     if (field.key === "customFirstPersonShare") {
@@ -930,25 +963,29 @@ function DrawdownTargetSection({
     }
     return true;
   });
+  const preferenceField = definition.fields.find((field) => field.key === "taxableDrawdownPreference");
 
   const hasAnyAccount = pensionAccounts.length > 0 || isaAccounts.length > 0 || giaAccounts.length > 0 || cashAccounts.length > 0;
 
   return (
     <Stack gap="sm">
-      <Title order={4}>Retirement income target</Title>
+      <Group gap={4}>
+        <Title order={4}>Retirement income target</Title>
+        <InfoTip>
+          Your total desired income each year, from every source combined — salary, State Pension, rental profit,
+          and drawdown. Automatic income counts toward it first; the engine only draws down whatever gap is left. For
+          example, £30,000 salary with a £50,000 target means £20,000 drawn from savings. Reaching this figure counts
+          as spent, so you don&rsquo;t need to separately add Living Expenses unless your actual spending genuinely
+          differs from it.
+        </InfoTip>
+      </Group>
       <Text size="sm" c="dimmed">
-        The most important number in this plan — your <strong>total</strong> desired income each year, from every
-        source combined: salary, State Pension, rental profit, and drawdown. Salary and other automatic income count
-        toward it first; the engine only draws down whatever gap is left, working out the most tax-efficient mix of
-        withdrawals from the accounts you add below. For example, £30,000 salary with a £50,000 target means £20,000
-        drawn from savings. Reaching this figure counts as spent — you don't need to separately add Living Expenses
-        unless your actual spending genuinely differs from it.
+        Your total desired income each year, from every source combined.
       </Text>
       {hasSecondPerson && <OwnerSelect owner={instance.owner} allowJoint onChange={(owner) => onChange({ ...instance, owner })} />}
       {isJoint && (
         <Text size="xs" c="dimmed">
-          Draws from each of your own pension/ISA, and either of your cash/GIA accounts, automatically — the engine
-          works out the most tax-efficient split between you (SPEC.md §5.7.4).
+          Draws from each of your own accounts automatically, split for the lowest combined tax.
         </Text>
       )}
       {!hasAnyAccount && (
@@ -962,6 +999,32 @@ function DrawdownTargetSection({
         inflationRate={inflationRate}
         onChange={(config) => onChange({ ...instance, config })}
       />
+      {preferenceField && (
+        <Card withBorder padding="sm" bg="var(--mantine-color-gray-light)">
+          <Stack gap="xs">
+            <Group gap={4}>
+              <Text fw={600} size="sm">
+                How to draw it down (optional)
+              </Text>
+              <InfoTip>
+                By default the engine finds the most tax-efficient mix automatically. Set an amount only if
+                you&rsquo;d rather steer more (or less) of your income through your pension — e.g. to preserve it for
+                later, or run it down faster. The rest is drawn from ISA, cash, and GIA first; your pension covers
+                anything they can&rsquo;t.
+              </InfoTip>
+            </Group>
+            <Text size="xs" c="dimmed">
+              Leave blank to let the engine find the most tax-efficient mix automatically.
+            </Text>
+            <CatalogItemForm
+              fields={[preferenceField]}
+              value={instance.config as Record<string, unknown>}
+              inflationRate={inflationRate}
+              onChange={(config) => onChange({ ...instance, config })}
+            />
+          </Stack>
+        </Card>
+      )}
     </Stack>
   );
 }
@@ -1010,8 +1073,15 @@ function PensionAccountCard({
           onChange={(v) => onChange({ ...account, annualChargeRate: typeof v === "number" ? v / 100 : 0 })}
         />
         <NumberInput
-          label="Employer contribution (per year)"
-          description="Paid directly by your employer, on top of anything you contribute yourself — never taxed as your income, but counts toward your Annual Allowance"
+          label={
+            <Group gap={4} wrap="nowrap">
+              <span>Employer contribution (per year)</span>
+              <InfoTip>
+                Paid directly by your employer, on top of anything you contribute yourself. Never taxed as your
+                income, but counts toward your Annual Allowance.
+              </InfoTip>
+            </Group>
+          }
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","

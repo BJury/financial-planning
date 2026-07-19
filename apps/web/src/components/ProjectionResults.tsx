@@ -18,6 +18,7 @@ import { useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { downloadCsv, projectionToCsv } from "../csvExport.js";
 import { formatMoney } from "../format.js";
+import { InfoTip } from "./InfoTip.js";
 import { computeNetWorth, computeProjection } from "../projection.js";
 
 interface ChartMetric {
@@ -60,6 +61,8 @@ interface TableColumn {
   readonly warningFlag?: (row: YearLedgerRow) => boolean;
   /** Whether this column is even relevant — hidden entirely (not just full of zeroes) when the user hasn't added the underlying income source/drain type at all. Omitted for a column that's always relevant regardless of scenario contents (the tax columns — there's no single catalog type to check for "any tax at all"). */
   readonly isIncluded?: (scenario: Scenario) => boolean;
+  /** Overrides the group's own colour for just this one column — used by the two drawdown-source columns, which need to match the Pension/Non-taxable balance columns' colours rather than the rest of the Drawdown group's grape. */
+  readonly bg?: string;
 }
 
 interface TableColumnGroup {
@@ -72,52 +75,154 @@ interface TableColumnGroup {
 const EXPENSE_DRAIN_TYPES = new Set(["livingExpenses", "oneOffOutflow", "mortgagePayment"]);
 const CONTRIBUTION_DRAIN_TYPES = new Set(["isaContribution", "giaContribution", "cashContribution", "pensionContribution"]);
 
+/** Every `DrawdownBucket` a taxable pension withdrawal can land in (SPEC.md §5.7.3) — the four Income Tax bands, as opposed to the one tax-free UFPLS bucket. */
+const TAXABLE_PENSION_BUCKETS = new Set(["taxablePersonalAllowance", "taxableBasicRate", "taxableHigherRate", "taxableAdditionalRate"]);
+
+/** The Retirement income target section is always present (SPEC.md §5.7.1) with a £0 default — only counts as "active" once it's actually been given a real target. */
+function hasActiveDrawdownTarget(scenario: Scenario): boolean {
+  return scenario.incomeSources.some(
+    (s) => s.type === "targetDrawdownIncome" && ((s.config as { readonly targetNetAnnualIncome?: number }).targetNetAnnualIncome ?? 0) > 0,
+  );
+}
+
 /**
- * The year-by-year table's column grouping (SPEC.md §7) — income sources
- * split into taxable vs non-taxable (each already tracked as its own
- * `PersonYearResult` field, so no engine change was needed: `grossIncome`
- * is earned/salary income specifically, `rentalProfitIncome` and
- * `statePensionIncome` are the other two taxable sources this engine
- * currently models, `taxFreeIncome` the one non-taxable one), then
- * outgoings, then drawdown income, then the tax columns, matching the
- * left-to-right reading order requested: what comes in (taxed, then
- * untaxed) → what goes out → what's drawn from savings/pensions → what's
- * paid in tax → the bottom-line net income/net worth.
+ * The year-by-year table's column grouping (SPEC.md §7). One "Income"
+ * group holds everything that came in this year, in one left-to-right
+ * reading order: taxable sources first (Salary, Rental profit, State
+ * Pension — each already its own `PersonYearResult` field, so no engine
+ * change was needed), then the one non-taxable source (Tax-free income),
+ * then the drawdown source breakdown (From pension/ISA/cash/GIA), then
+ * the drawdown net total *last* — a summary of everything already shown
+ * to its left in this same group, so it reads as the section's own
+ * bottom line rather than another individual source. Every column keeps
+ * its individual taxable (teal) / non-taxable (cyan) colouring via its
+ * own `bg` override, even though they now share one group label; the
+ * total's own grape sets it apart as a summary, not a source. Then
+ * outgoings, then the tax columns, then the overall net income/net worth.
  */
 const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
   {
-    label: "Taxable income",
-    bg: "var(--mantine-color-teal-light)",
+    label: "Income",
+    bg: "var(--mantine-color-gray-light)",
     columns: [
       {
         key: "salary",
         label: "Salary",
         compute: (row) => sumPence(row.perPerson.map((p) => p.grossIncome)),
+        bg: "var(--mantine-color-teal-light)",
         isIncluded: (scenario) => scenario.incomeSources.some((s) => s.type === "salary"),
       },
       {
         key: "rentalProfit",
         label: "Rental profit",
         compute: (row) => sumPence(row.perPerson.map((p) => p.rentalProfitIncome)),
+        bg: "var(--mantine-color-teal-light)",
         isIncluded: (scenario) => scenario.incomeSources.some((s) => s.type === "rentalIncome"),
       },
       {
         key: "statePension",
         label: "State Pension",
         compute: (row) => sumPence(row.perPerson.map((p) => p.statePensionIncome)),
+        bg: "var(--mantine-color-teal-light)",
         isIncluded: (scenario) => scenario.incomeSources.some((s) => s.type === "statePension"),
       },
-    ],
-  },
-  {
-    label: "Non-taxable income",
-    bg: "var(--mantine-color-cyan-light)",
-    columns: [
       {
         key: "taxFreeIncome",
         label: "Tax-free income",
         compute: (row) => sumPence(row.perPerson.map((p) => p.taxFreeIncome)),
+        bg: "var(--mantine-color-cyan-light)",
         isIncluded: (scenario) => scenario.incomeSources.some((s) => s.type === "oneOffInflow"),
+      },
+      {
+        key: "drawdownFromPensionTaxFree",
+        label: "Pension (tax-free)",
+        // The UFPLS 25% share (SPEC.md §5.7.2, `tax/pensionLumpSum.ts`) —
+        // already split out at the bucket level, so no engine change was
+        // needed to surface it here.
+        compute: (row) =>
+          sumPence(row.perPerson.flatMap((p) => p.drawdownBuckets.filter((b) => b.bucket === "taxFreePensionLumpSum").map((b) => b.amount))),
+        // Cyan — the same "not taxed" colour as Tax-free income/ISA/cash/GIA,
+        // even though this is a pension withdrawal (source ≠ tax treatment).
+        bg: "var(--mantine-color-cyan-light)",
+        isIncluded: (scenario) => hasActiveDrawdownTarget(scenario) && scenario.accounts.some((a) => a.kind === "pension"),
+      },
+      {
+        key: "drawdownFromPensionTaxable",
+        label: "Pension (taxable)",
+        compute: (row) =>
+          sumPence(row.perPerson.flatMap((p) => p.drawdownBuckets.filter((b) => TAXABLE_PENSION_BUCKETS.has(b.bucket)).map((b) => b.amount))),
+        // Teal — matches the Pension balance column, and is taxed like
+        // ordinary pension income.
+        bg: "var(--mantine-color-teal-light)",
+        isIncluded: (scenario) => hasActiveDrawdownTarget(scenario) && scenario.accounts.some((a) => a.kind === "pension"),
+      },
+      {
+        key: "drawdownFromIsa",
+        label: "From ISA",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.drawdownFromIsa)),
+        // Coloured the same as the Non-taxable balance column.
+        bg: "var(--mantine-color-cyan-light)",
+        isIncluded: (scenario) => hasActiveDrawdownTarget(scenario) && scenario.accounts.some((a) => a.kind === "isa"),
+      },
+      {
+        key: "drawdownFromCash",
+        label: "From cash",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.drawdownFromCash)),
+        bg: "var(--mantine-color-cyan-light)",
+        isIncluded: (scenario) => hasActiveDrawdownTarget(scenario) && scenario.accounts.some((a) => a.kind === "cash"),
+      },
+      {
+        key: "drawdownFromGia",
+        label: "From GIA",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.drawdownFromGia)),
+        bg: "var(--mantine-color-cyan-light)",
+        isIncluded: (scenario) => hasActiveDrawdownTarget(scenario) && scenario.accounts.some((a) => a.kind === "gia"),
+      },
+      {
+        key: "drawdown",
+        label: "Drawdown income",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.drawdownNetAchieved)),
+        warningFlag: (row) => row.perPerson.some((p) => p.drawdownShortfall),
+        // Its own colour, not taxable/non-taxable teal/cyan — it's the
+        // net total of everything drawn down this year, not one specific
+        // source, so it's set apart rather than made to look like it
+        // belongs to either side.
+        bg: "var(--mantine-color-grape-light)",
+        // The Retirement income target section is always present (SPEC.md
+        // §5.7.1) with a £0 default — only counts as "included" once it's
+        // actually been given a real target, not just because the
+        // permanent section exists on the page.
+        isIncluded: (scenario) => hasActiveDrawdownTarget(scenario),
+      },
+      {
+        key: "netIncome",
+        label: "Net income",
+        // Everything that came in this year, net of tax, combined —
+        // drawdown plus salary, rental profit, State Pension, and
+        // tax-free income. Deliberately *not* the engine's own
+        // `PersonYearResult.netIncome` field: that one is further reduced
+        // by living expenses/contributions and by auto-consumption
+        // (achieving a drawdown target counts as spent, SPEC.md §5.7.2),
+        // so it usually settles at/near £0 and doesn't answer "how much
+        // came in" — this column recomputes the total from the same
+        // already-tracked per-source figures, without those subtractions.
+        compute: (row) =>
+          subtractPence(
+            sumPence(
+              row.perPerson.flatMap((p) => [
+                p.grossIncome,
+                p.rentalProfitIncome,
+                p.statePensionIncome,
+                p.drawdownNetAchieved,
+                p.taxFreeIncome,
+                p.mortgageInterestCredit,
+                p.propertySaleNetProceeds,
+              ]),
+            ),
+            sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax])),
+          ),
+        warningFlag: (row) => row.perPerson.some((p) => p.livingExpensesShortfall),
+        bg: "var(--mantine-color-yellow-light)",
       },
     ],
   },
@@ -140,35 +245,18 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
     ],
   },
   {
-    label: "Drawdown",
-    bg: "var(--mantine-color-grape-light)",
-    columns: [
-      {
-        key: "drawdown",
-        label: "Drawdown income",
-        compute: (row) => sumPence(row.perPerson.map((p) => p.drawdownNetAchieved)),
-        warningFlag: (row) => row.perPerson.some((p) => p.drawdownShortfall),
-        // The Retirement income target section is always present (SPEC.md
-        // §5.7.1) with a £0 default — only counts as "included" once it's
-        // actually been given a real target, not just because the
-        // permanent section exists on the page.
-        isIncluded: (scenario) =>
-          scenario.incomeSources.some(
-            (s) => s.type === "targetDrawdownIncome" && ((s.config as { readonly targetNetAnnualIncome?: number }).targetNetAnnualIncome ?? 0) > 0,
-          ),
-      },
-    ],
-  },
-  {
     label: "Tax",
     bg: "var(--mantine-color-red-light)",
     columns: [
       {
         key: "incomeTax",
-        label: "Income Tax",
+        label: "Income Tax and NI",
+        // NI folded in here rather than kept as its own column — it's
+        // never interesting on its own, only as part of the total tax
+        // bite on income.
         compute: (row) =>
           subtractPence(
-            sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.drawdownIncomeTax, p.savingsTax, p.dividendTax])),
+            sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.drawdownIncomeTax, p.savingsTax, p.dividendTax, p.nationalInsurance])),
             sumPence(row.perPerson.map((p) => p.mortgageInterestCredit)),
           ),
       },
@@ -177,17 +265,9 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         label: "CGT",
         compute: (row) => sumPence(row.perPerson.flatMap((p) => [p.drawdownCapitalGainsTax, p.propertySaleCapitalGainsTax, p.shortfallCapitalGainsTax])),
       },
-      { key: "ni", label: "NI", compute: (row) => sumPence(row.perPerson.map((p) => p.nationalInsurance)) },
     ],
   },
 ];
-
-const NET_INCOME_COLUMN: TableColumn = {
-  key: "netIncome",
-  label: "Net income",
-  compute: (row) => sumPence(row.perPerson.map((p) => p.netIncome)),
-  warningFlag: (row) => row.perPerson.some((p) => p.livingExpensesShortfall),
-};
 
 const ACCOUNT_KIND_LABELS: Partial<Record<Account["kind"], string>> = { pension: "Pension", isa: "ISA", gia: "GIA", cash: "Cash" };
 
@@ -274,7 +354,7 @@ function computeKeyFlags(result: ProjectionResult | null): readonly KeyFlag[] {
   if (firstMpaaYear) {
     flags.push({
       taxYear: firstMpaaYear.taxYear,
-      message: "The Money Purchase Annual Allowance is now active (a pension was flexibly accessed) — future pension contributions are capped at a lower allowance.",
+      message: "A pension was flexibly accessed — future pension contributions are now capped at a lower allowance.",
     });
   }
 
@@ -313,16 +393,18 @@ interface ChartEvent {
 }
 
 /**
- * One-off, dated events (SPEC.md §3.8, §3.9) marked directly on the
- * chart as vertical reference lines — seeing *why* net worth jumps or
- * dips in a given year (an inheritance landing, a house deposit paid, a
- * property sold) is easy to miss buried in the year-by-year table, but
- * hard to miss as a labelled line right on the graph. Maps each event's
- * own date to whichever projection row's `calendarYear` it falls in,
- * the same year-only mapping the engine itself uses (no month-level
- * precision anywhere in this app) — reused here rather than re-derived,
- * so an event's line always lines up with the exact row its amount
- * actually landed in.
+ * One-off, dated events (SPEC.md §3.8, §3.9), plus the one recurring
+ * milestone worth marking the same way — when drawdown income first
+ * actually starts — shown directly on the chart as vertical reference
+ * lines. Seeing *why* net worth jumps, dips, or starts declining in a
+ * given year (an inheritance landing, a house deposit paid, a property
+ * sold, savings starting to be drawn down) is easy to miss buried in the
+ * year-by-year table, but hard to miss as a labelled line right on the
+ * graph. Maps each one-off event's own date to whichever projection
+ * row's `calendarYear` it falls in, the same year-only mapping the
+ * engine itself uses (no month-level precision anywhere in this app) —
+ * reused here rather than re-derived, so an event's line always lines up
+ * with the exact row its amount actually landed in.
  */
 function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonly ChartEvent[] {
   const events: ChartEvent[] = [];
@@ -352,6 +434,19 @@ function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonl
     const taxYear = taxYearForDate(account.plannedSale.saleDate);
     if (!taxYear) continue;
     events.push({ key: `sale:${account.id}`, taxYear, label: "Sale", color: "#7048e8" });
+  }
+
+  // The first year any actual money is drawn (SPEC.md §5.7.2) — not the
+  // target's own configured "starts at age", since the target is now
+  // netted against salary/State Pension/other automatic income
+  // (`adjustDrawdownTargetForAutomaticIncome.ts`) and may stay fully
+  // covered by that income for years after the target technically
+  // becomes active, with nothing actually drawn yet. Marking the
+  // configured start age would be misleading in that case; marking the
+  // first real withdrawal is what's actually useful to see on the chart.
+  const firstDrawdownYear = result.rows.find((row) => row.perPerson.some((p) => p.drawdownNetAchieved > 0));
+  if (firstDrawdownYear) {
+    events.push({ key: "drawdown-start", taxYear: firstDrawdownYear.taxYear, label: "Drawdown starts", color: "#1971c2" });
   }
 
   return events;
@@ -420,6 +515,13 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
     () => accountMetrics.filter((m) => m.accountKind === "pension" || m.accountKind === "isa" || m.accountKind === "gia" || m.accountKind === "cash"),
     [accountMetrics],
   );
+  // Split the same way the taxable/non-taxable drawdown preference does
+  // (`drawdown/solveDrawdown.ts`'s `taxablePreferenceAmount`): pension is
+  // the one taxable account kind, ISA/GIA/cash the non-taxable ones — so
+  // a balance column reuses the exact same colour as the income columns
+  // it corresponds to, rather than a third, unrelated colour scheme.
+  const pensionBalanceMetrics = useMemo(() => balanceMetrics.filter((m) => m.accountKind === "pension"), [balanceMetrics]);
+  const nonTaxableBalanceMetrics = useMemo(() => balanceMetrics.filter((m) => m.accountKind !== "pension"), [balanceMetrics]);
   // Only columns for income sources/drains actually present in the
   // scenario — a column of nothing but zeroes for a catalog type the
   // user never added is noise, not information. Groups left with no
@@ -494,7 +596,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       </Group>
 
       <Alert color="blue" variant="light">
-        Illustrative projection only, not financial advice — figures are in today&rsquo;s money (SPEC.md §0, §5.8).
+        Illustrative projection only, not financial advice — figures are in today&rsquo;s money.
       </Alert>
 
       {keyFlags.length > 0 && (
@@ -527,7 +629,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
 
       {(chartEvents.length > 0 || shortfallRanges.length > 0) && (
         <Text size="xs" c="dimmed">
-          {chartEvents.length > 0 && "Dashed lines mark one-off inflows/outflows and property sales. "}
+          {chartEvents.length > 0 && "Dashed lines mark one-off events and when drawdown starts. "}
           {shortfallRanges.length > 0 && "Shaded red bands mark years a drawdown target isn't fully met."}
         </Text>
       )}
@@ -579,12 +681,17 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
         )}
       </div>
 
-      <Title order={4}>Year by year</Title>
+      <Group gap={4}>
+        <Title order={4}>Year by year</Title>
+        <InfoTip>
+          Account balances on the left, then everything that came in this year under &ldquo;Income&rdquo; — taxable
+          sources in teal, non-taxable in cyan, matching the balance columns. Pension withdrawals split into their
+          own tax-free and taxable shares, with the drawdown net total and combined net income (yellow) at the far
+          right of that section. Then outgoings, tax, and net worth.
+        </InfoTip>
+      </Group>
       <Text size="sm" c="dimmed">
-        Income sources on the left (taxable, then non-taxable), then outgoings, drawdown income, and tax — each
-        section colour-coded — followed by net income and net worth. Pension/ISA/GIA/cash balance columns at the far
-        right show each individual account (SPEC.md §7), the same figures the chart&rsquo;s &ldquo;Account
-        balances&rdquo; lines above plot.
+        Colour-coded by section — teal for taxable, cyan for non-taxable.
       </Text>
       <div style={{ overflowX: "auto" }}>
         <Table
@@ -593,43 +700,50 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           withColumnBorders
           style={{ tableLayout: "fixed" }}
           ff="monospace"
-          miw={TABLE_COLUMN_WIDTH * (1 + visibleColumnGroups.reduce((n, g) => n + g.columns.length, 0) + 2 + balanceMetrics.length)}
+          miw={TABLE_COLUMN_WIDTH * (1 + visibleColumnGroups.reduce((n, g) => n + g.columns.length, 0) + 1 + balanceMetrics.length)}
         >
           <Table.Thead>
             <Table.Tr>
               <Table.Th w={TABLE_COLUMN_WIDTH} rowSpan={2}>
                 Tax year
               </Table.Th>
+              {pensionBalanceMetrics.length > 0 && (
+                <Table.Th colSpan={pensionBalanceMetrics.length} bg="var(--mantine-color-teal-light)" ta="center">
+                  Pension balances
+                </Table.Th>
+              )}
+              {nonTaxableBalanceMetrics.length > 0 && (
+                <Table.Th colSpan={nonTaxableBalanceMetrics.length} bg="var(--mantine-color-cyan-light)" ta="center">
+                  Non-taxable balances
+                </Table.Th>
+              )}
               {visibleColumnGroups.map((group) => (
                 <Table.Th key={group.label} colSpan={group.columns.length} bg={group.bg} ta="center">
                   {group.label}
                 </Table.Th>
               ))}
-              <Table.Th w={TABLE_COLUMN_WIDTH} rowSpan={2}>
-                Net income
-              </Table.Th>
               <Table.Th w={TABLE_COLUMN_WIDTH} rowSpan={2} bg="var(--mantine-color-blue-light)">
                 Net worth
               </Table.Th>
-              {balanceMetrics.length > 0 && (
-                <Table.Th colSpan={balanceMetrics.length} ta="center">
-                  Account balances
-                </Table.Th>
-              )}
             </Table.Tr>
             <Table.Tr>
+              {pensionBalanceMetrics.map((m) => (
+                <Table.Th key={m.key} w={TABLE_COLUMN_WIDTH} bg="var(--mantine-color-teal-light)">
+                  {m.label}
+                </Table.Th>
+              ))}
+              {nonTaxableBalanceMetrics.map((m) => (
+                <Table.Th key={m.key} w={TABLE_COLUMN_WIDTH} bg="var(--mantine-color-cyan-light)">
+                  {m.label}
+                </Table.Th>
+              ))}
               {visibleColumnGroups.flatMap((group) =>
                 group.columns.map((column) => (
-                  <Table.Th key={column.key} w={TABLE_COLUMN_WIDTH} bg={group.bg}>
+                  <Table.Th key={column.key} w={TABLE_COLUMN_WIDTH} bg={column.bg ?? group.bg}>
                     {column.label}
                   </Table.Th>
                 )),
               )}
-              {balanceMetrics.map((m) => (
-                <Table.Th key={m.key} w={TABLE_COLUMN_WIDTH}>
-                  {m.label}
-                </Table.Th>
-              ))}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -638,26 +752,27 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
               return (
                 <Table.Tr key={row.taxYear}>
                   <Table.Td>{row.taxYear}</Table.Td>
+                  {pensionBalanceMetrics.map((m) => (
+                    <Table.Td key={m.key} bg="var(--mantine-color-teal-light)" ta="right">
+                      £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </Table.Td>
+                  ))}
+                  {nonTaxableBalanceMetrics.map((m) => (
+                    <Table.Td key={m.key} bg="var(--mantine-color-cyan-light)" ta="right">
+                      £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </Table.Td>
+                  ))}
                   {visibleColumnGroups.flatMap((group) =>
                     group.columns.map((column) => (
-                      <Table.Td key={column.key} bg={group.bg} ta="right">
+                      <Table.Td key={column.key} bg={column.bg ?? group.bg} ta="right">
                         {formatMoney(column.compute(row))}
                         {column.warningFlag?.(row) ? " ⚠" : ""}
                       </Table.Td>
                     )),
                   )}
-                  <Table.Td ta="right">
-                    {formatMoney(NET_INCOME_COLUMN.compute(row))}
-                    {NET_INCOME_COLUMN.warningFlag?.(row) ? " ⚠" : ""}
-                  </Table.Td>
                   <Table.Td bg="var(--mantine-color-blue-light)" fw={600} ta="right">
                     {formatMoney(netWorth)}
                   </Table.Td>
-                  {balanceMetrics.map((m) => (
-                    <Table.Td key={m.key} ta="right">
-                      £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </Table.Td>
-                  ))}
                 </Table.Tr>
               );
             })}

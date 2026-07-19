@@ -41,6 +41,11 @@ function alreadyHigherRate(): HouseholdDrawdownPerson<typeof PERSON_A>["state"] 
   };
 }
 
+/** A person with both ample pension and ample ISA — for tests of the taxable/non-taxable preference, which need genuine capacity on both sides. */
+function generousEverything(): HouseholdDrawdownPerson<typeof PERSON_A>["state"] {
+  return { ...generousPension(), isaBalance: poundsToPence(50000) };
+}
+
 describe("solveHouseholdDrawdown", () => {
   it("delegates straight to solveDrawdown for a single-person household", () => {
     const target = poundsToPence(10000);
@@ -206,6 +211,66 @@ describe("solveHouseholdDrawdown", () => {
       );
       expect(sumOfPersonNet).toBe(result.totalNetAchieved);
       expect(sumOfPersonTax).toBe(result.totalTaxCost);
+    });
+  });
+
+  describe("taxable/non-taxable preference (taxablePreferenceAmount)", () => {
+    it("splits the household's one combined preference proportionally, by the same share used for the target itself ('even' strategy)", () => {
+      const target = poundsToPence(20000);
+      const result = solveHouseholdDrawdown(
+        target,
+        { kind: "even" },
+        [
+          { id: PERSON_A, state: generousEverything() },
+          { id: PERSON_B, state: generousEverything() },
+        ],
+        cgtRates,
+        poundsToPence(8000), // household preference — each person's own £10,000 target gets a £4,000 preferred pension share
+      );
+      const a = result.perPerson.find((p) => p.id === PERSON_A)?.result;
+      const b = result.perPerson.find((p) => p.id === PERSON_B)?.result;
+
+      expect(a?.pensionGrossWithdrawn).toBe(poundsToPence(4000));
+      expect(a?.isaGrossWithdrawn).toBe(poundsToPence(6000));
+      expect(b?.pensionGrossWithdrawn).toBe(poundsToPence(4000));
+      expect(b?.isaGrossWithdrawn).toBe(poundsToPence(6000));
+      expect(result.totalNetAchieved).toBe(target);
+    });
+
+    it("leaves every existing call untouched when no preference is passed at all", () => {
+      const target = poundsToPence(20000);
+      const withoutPreferenceArg = solveHouseholdDrawdown(
+        target,
+        { kind: "even" },
+        [
+          { id: PERSON_A, state: generousEverything() },
+          { id: PERSON_B, state: generousEverything() },
+        ],
+        cgtRates,
+      );
+      const a = withoutPreferenceArg.perPerson.find((p) => p.id === PERSON_A)?.result;
+      // No preference at all — the default tax-optimised order applies: pension fills the
+      // Personal Allowance first (£12,570 worth, well within the £10,000 target), so the whole
+      // £10,000 comes from pension and the ISA is never touched.
+      expect(a?.pensionGrossWithdrawn).toBe(poundsToPence(10000));
+      expect(a?.isaGrossWithdrawn).toBe(0);
+    });
+
+    it("shifts more of the draw toward ISA under the 'optimised' strategy when the preference favours non-taxable sources", () => {
+      const target = poundsToPence(60000);
+      const people = [
+        { id: PERSON_A, state: generousEverything() },
+        { id: PERSON_B, state: { ...alreadyHigherRate(), isaBalance: poundsToPence(50000) } },
+      ] as const;
+
+      const taxOptimised = solveHouseholdDrawdown(target, { kind: "optimised" }, people, cgtRates);
+      // A low preference (£5,000 of the £60,000 household target) steers most of the rest toward ISA/cash/GIA.
+      const preferred = solveHouseholdDrawdown(target, { kind: "optimised" }, people, cgtRates, poundsToPence(5000));
+
+      const totalIsa = (result: typeof taxOptimised) => result.perPerson.reduce((total, p) => addPence(total, p.result.isaGrossWithdrawn), zeroPence());
+      expect(totalIsa(preferred)).toBeGreaterThan(totalIsa(taxOptimised));
+      expect(preferred.totalNetAchieved).toBe(target);
+      expect(preferred.shortfall).toBe(false);
     });
   });
 });

@@ -132,6 +132,14 @@ export interface PersonYearResult {
   readonly accountContributions: Pence;
   /** Total gross withdrawn this year to fund any active drawdown target(s) — pension + ISA + cash + GIA combined (SPEC.md §5.7). */
   readonly drawdownGrossWithdrawn: Pence;
+  /** Of `drawdownGrossWithdrawn`, how much came specifically from a pension — the taxable side of the taxable/non-taxable drawdown preference (`drawdown/solveDrawdown.ts`'s `taxablePreferenceAmount`). */
+  readonly drawdownFromPension: Pence;
+  /** Of `drawdownGrossWithdrawn`, how much came specifically from an ISA — one of the non-taxable sides of the same preference. */
+  readonly drawdownFromIsa: Pence;
+  /** Of `drawdownGrossWithdrawn`, how much came specifically from cash — another non-taxable side of the same preference. */
+  readonly drawdownFromCash: Pence;
+  /** Of `drawdownGrossWithdrawn`, how much came specifically from a GIA — another non-taxable side of the same preference. */
+  readonly drawdownFromGia: Pence;
   readonly drawdownIncomeTax: Pence;
   /** CGT on any realised GIA gain drawn down this year — kept separate from Income Tax since it's a different tax entirely. */
   readonly drawdownCapitalGainsTax: Pence;
@@ -897,6 +905,14 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
     // legitimately coexist in the same year.
     interface DrawdownAccumulator {
       grossWithdrawn: Pence;
+      /** Of `grossWithdrawn`, the pension-sourced share only — see `PersonYearResult.drawdownFromPension`. */
+      grossWithdrawnFromPension: Pence;
+      /** Of `grossWithdrawn`, the ISA-sourced share only — see `PersonYearResult.drawdownFromIsa`. */
+      grossWithdrawnFromIsa: Pence;
+      /** Of `grossWithdrawn`, the cash-sourced share only — see `PersonYearResult.drawdownFromCash`. */
+      grossWithdrawnFromCash: Pence;
+      /** Of `grossWithdrawn`, the GIA-sourced share only — see `PersonYearResult.drawdownFromGia`. */
+      grossWithdrawnFromGia: Pence;
       incomeTax: Pence;
       capitalGainsTax: Pence;
       netAchieved: Pence;
@@ -927,6 +943,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         p.pass1.person.id,
         {
           grossWithdrawn: zeroPence(),
+          grossWithdrawnFromPension: zeroPence(),
+          grossWithdrawnFromIsa: zeroPence(),
+          grossWithdrawnFromCash: zeroPence(),
+          grossWithdrawnFromGia: zeroPence(),
           incomeTax: zeroPence(),
           capitalGainsTax: zeroPence(),
           netAchieved: zeroPence(),
@@ -968,6 +988,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         accumulator.grossWithdrawn,
         addPence(addPence(result.pensionGrossWithdrawn, result.isaGrossWithdrawn), addPence(result.cashGrossWithdrawn, result.giaGrossWithdrawn)),
       );
+      accumulator.grossWithdrawnFromPension = addPence(accumulator.grossWithdrawnFromPension, result.pensionGrossWithdrawn);
+      accumulator.grossWithdrawnFromIsa = addPence(accumulator.grossWithdrawnFromIsa, result.isaGrossWithdrawn);
+      accumulator.grossWithdrawnFromCash = addPence(accumulator.grossWithdrawnFromCash, result.cashGrossWithdrawn);
+      accumulator.grossWithdrawnFromGia = addPence(accumulator.grossWithdrawnFromGia, result.giaGrossWithdrawn);
       accumulator.incomeTax = addPence(accumulator.incomeTax, result.incomeTaxCost);
       accumulator.capitalGainsTax = addPence(accumulator.capitalGainsTax, result.capitalGainsTaxCost);
       accumulator.netAchieved = addPence(accumulator.netAchieved, result.netAchieved);
@@ -1142,7 +1166,13 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         const householdOtherNetIncome = sumPence(eligiblePeople.map((p) => otherNetIncomeByPersonId.get(p.pass1.person.id) ?? zeroPence()));
         const adjustedHouseholdTarget = adjustDrawdownTargetForAutomaticIncome(config.targetNetAnnualIncome, householdOtherNetIncome);
 
-        const householdResult = solveHouseholdDrawdown(adjustedHouseholdTarget, strategy, householdPeopleInputs, prepared.capitalGainsTax);
+        const householdResult = solveHouseholdDrawdown(
+          adjustedHouseholdTarget,
+          strategy,
+          householdPeopleInputs,
+          prepared.capitalGainsTax,
+          config.taxableDrawdownPreference,
+        );
 
         for (const { id: personId, result } of householdResult.perPerson) {
           const accountIds = accountIdsByPerson.get(personId) ?? discoverAccountIds(personId);
@@ -1169,6 +1199,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         capitalGainsExemptAmountRemaining: accumulator.capitalGainsExemptAmountRemaining,
         capitalGainsRates: prepared.capitalGainsTax,
         ...balances,
+        ...(config.taxableDrawdownPreference !== undefined ? { taxablePreferenceAmount: config.taxableDrawdownPreference } : {}),
       });
 
       creditAccountsAfterDrawdown(accountIds, result);
@@ -1212,6 +1243,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
 
       const accumulator = drawdownAccumulators.get(person.id);
       const drawdownGrossWithdrawn = accumulator?.grossWithdrawn ?? zeroPence();
+      const drawdownFromPension = accumulator?.grossWithdrawnFromPension ?? zeroPence();
+      const drawdownFromIsa = accumulator?.grossWithdrawnFromIsa ?? zeroPence();
+      const drawdownFromCash = accumulator?.grossWithdrawnFromCash ?? zeroPence();
+      const drawdownFromGia = accumulator?.grossWithdrawnFromGia ?? zeroPence();
       const drawdownIncomeTax = accumulator?.incomeTax ?? zeroPence();
       const drawdownCapitalGainsTax = accumulator?.capitalGainsTax ?? zeroPence();
       const drawdownNetAchieved = accumulator?.netAchieved ?? zeroPence();
@@ -1464,6 +1499,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         otherExpenses: pass1.otherExpenses,
         accountContributions: pass1.accountContributions,
         drawdownGrossWithdrawn,
+        drawdownFromPension,
+        drawdownFromIsa,
+        drawdownFromCash,
+        drawdownFromGia,
         drawdownIncomeTax,
         drawdownCapitalGainsTax,
         drawdownNetAchieved,
