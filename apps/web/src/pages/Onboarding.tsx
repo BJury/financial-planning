@@ -397,7 +397,11 @@ export function Onboarding() {
       kind: "pension",
       id: a.id,
       owner: a.owner,
-      pensionType: "workplaceDC",
+      // Only SIPPs are modelled — a workplace DC pension is taxed
+      // identically at drawdown (same UFPLS split, same Lump Sum
+      // Allowance, same MPAA/Annual Allowance rules), so there's nothing
+      // to actually distinguish here.
+      pensionType: "sipp",
       currentBalance: poundsToPence(a.currentBalance),
       annualGrowthRate: a.annualGrowthRate,
       annualChargeRate: a.annualChargeRate,
@@ -1045,7 +1049,8 @@ function PensionAccountCard({
   return (
     <Card withBorder padding="sm">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Pension</Text>
+        {/* Only SIPPs are modelled — see the "sipp" comment in buildScenario() for why. */}
+        <Text fw={600}>SIPP Pension</Text>
         <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label="Remove pension account">
           ✕
         </ActionIcon>
