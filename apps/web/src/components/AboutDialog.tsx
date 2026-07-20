@@ -14,7 +14,7 @@ export function AboutDialog() {
 
   return (
     <>
-      <Button variant="subtle" onClick={open}>
+      <Button variant="subtle" size="xs" onClick={open}>
         About
       </Button>
       <Modal opened={opened} onClose={close} title="About Can I Stop" size="md">
