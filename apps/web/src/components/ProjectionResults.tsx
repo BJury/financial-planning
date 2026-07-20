@@ -885,7 +885,8 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
             Account balances on the left, then everything that came in this year under &ldquo;Income&rdquo; — taxable
             sources in teal, non-taxable in cyan, matching the balance columns. Pension withdrawals split into their
             own tax-free and taxable shares, with the drawdown net total and combined net income (yellow) at the far
-            right of that section. Then outgoings, tax, and net worth.
+            right of that section. Then outgoings, tax, and net worth. The &ldquo;Show&rdquo; dropdown also sets what
+            the graph above is plotted against.
           </InfoTip>
         </Group>
         <Select
@@ -897,12 +898,6 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           w={160}
         />
       </Group>
-      <Text size="xs" c="dimmed">
-        Also sets what the graph above is plotted against.
-      </Text>
-      <Text size="sm" c="dimmed">
-        Colour-coded by section — teal for taxable, cyan for non-taxable.
-      </Text>
       <div style={{ overflowX: "auto" }}>
         <Table
           striped
