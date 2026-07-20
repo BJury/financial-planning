@@ -18,6 +18,7 @@ import {
   type IncomeSourceInstance,
   type IsaAccount,
   type Owner,
+  type Pence,
   type PensionAccount,
   type PersonId,
   type Property,
@@ -35,12 +36,26 @@ import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { InfoTip } from "../components/InfoTip.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
 import { ProjectionResults } from "../components/ProjectionResults.js";
+import { QuickStartWizard, type QuickStartAnswers } from "../components/QuickStartWizard.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
 const PERSON_B_ID = personId("partner");
-const DEFAULT_INFLATION_RATE = 0.025;
+// UK CPI, 12 months to May 2026 (ONS, released 2026-06-17, unchanged from
+// April) — the most recent published figure as of writing. Just a
+// starting point for a new plan, editable via the "Inflation rate" input
+// like every other assumption.
+const DEFAULT_INFLATION_RATE = 0.028;
 const DEFAULT_TARGET_RETIREMENT_AGE = 67;
+// The S&P 500's own long-run total return (dividends reinvested) in GBP,
+// averaged over the last 30 years — sourced as a nominal figure (~8.5%/yr,
+// per compoundwise.co.uk's sterling-equivalent backtest), so it's run
+// through the same `convertNominalToReal` every other growth-rate input
+// on this page uses, not stored as-is. Only used as the default for a
+// newly-added pension/GIA account (equity-heavy accounts) — ISA/cash
+// accounts keep their own separate 0% default, since a cash-like account
+// tracking equity market returns would be a misleading starting point.
+const DEFAULT_EQUITY_NOMINAL_GROWTH_RATE = 0.085;
 
 // A random, collision-proof id rather than a sequential counter — this
 // page can be re-entered with an *existing* Scenario already loaded
@@ -382,6 +397,7 @@ export function Onboarding() {
   const [drawdownTargets, setDrawdownTargets] = useState<IncomeSourceInstance[]>([...initial.drawdownTargets]);
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
+  const [quickStartOpened, setQuickStartOpened] = useState(false);
 
   const addIncomeSource = (type: string) => {
     const definition = registry.getIncomeSource(type);
@@ -412,6 +428,154 @@ export function Onboarding() {
     const definition = registry.getIncomeDrain(type);
     const config = createDefaultConfig(definition.fields);
     setIncomeDrains((prev) => [...prev, { id: generateId("drain"), type, owner: PERSON_ID, config }]);
+  };
+
+  // Updates (or creates) the one generalCashIncome instance funding a
+  // Quick-Start-created account's ongoing contribution — matched by its
+  // own destinationAccountId, same idempotent "first existing one" shape
+  // applyQuickStart uses for accounts themselves.
+  const applyQuickStartContribution = (destinationAccountId: string, amount: Pence, endDate: string) => {
+    const existing = incomeSources.find(
+      (s) => s.type === "generalCashIncome" && (s.config as { destinationAccountId?: string }).destinationAccountId === destinationAccountId,
+    );
+    if (existing) {
+      setIncomeSources((prev) => prev.map((s) => (s.id === existing.id ? { ...s, config: { ...(s.config as object), amount }, endDate } : s)));
+    } else {
+      setIncomeSources((prev) => [
+        ...prev,
+        { id: generateId("src"), type: "generalCashIncome", owner: PERSON_ID, config: { amount, destinationAccountId }, endDate },
+      ]);
+    }
+  };
+
+  // Applies a QuickStartWizard's answers as a bulk prefill — every write
+  // here is exactly the same shape a hand-edit already produces (same
+  // default account fields as "+ Add pension" etc.). Idempotent per
+  // field: the *first* existing account of a kind is updated in place
+  // rather than a new one always being added, so re-running Quick Start
+  // (or running it after already having set some of this up by hand)
+  // never creates duplicates — it only ever catches up whatever's
+  // actually changed.
+  const applyQuickStart = (answers: QuickStartAnswers) => {
+    setDateOfBirth(answers.dateOfBirth);
+
+    setDrawdownTargets((prev) =>
+      prev.map((t, i) =>
+        i === 0
+          ? {
+              ...t,
+              config: {
+                ...(t.config as TargetDrawdownIncomeConfig),
+                targetNetAnnualIncome: poundsToPence(answers.targetAnnualIncome),
+                startAge: answers.retirementAge,
+              },
+            }
+          : t,
+      ),
+    );
+
+    const contributionEndDate = isoDateFromAge(answers.dateOfBirth, answers.retirementAge);
+
+    // Every contribution below is modelled as a `generalCashIncome`
+    // source paid straight into the account (tax-free, no relief-at-
+    // source uplift, no Annual Allowance impact — see generalCashIncome.ts)
+    // rather than a `pensionContribution`/`isaContribution`/etc. drain.
+    // Those drains model money *already reflected in other declared
+    // income* being redirected into savings — Quick Start deliberately
+    // never asks about salary/employment income, so there'd be nothing
+    // for a contribution drain to be funded from, and the engine would
+    // (correctly, given that gap) treat it as an unaffordable shortfall
+    // and drain the very account being contributed to. generalCashIncome
+    // sidesteps that entirely, at the cost of not modelling pension tax
+    // relief for a Quick-Start-created pension contribution specifically
+    // — called out in the wizard's own Review step.
+
+    // Pension
+    if (answers.pension.balance > 0 || answers.pension.annualContribution > 0) {
+      const existingPension = pensionAccounts[0];
+      const pensionAccountId = existingPension?.id ?? generateId("pension");
+      if (existingPension) {
+        setPensionAccounts((prev) => prev.map((a, i) => (i === 0 ? { ...a, currentBalance: answers.pension.balance } : a)));
+      } else {
+        setPensionAccounts((prev) => [
+          ...prev,
+          {
+            id: pensionAccountId,
+            owner: PERSON_ID,
+            currentBalance: answers.pension.balance,
+            annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
+            annualChargeRate: 0.0005,
+            employerAnnualContribution: 0,
+            accessDate: answers.dateOfBirth ? isoDateFromAge(answers.dateOfBirth, 57) : "",
+          },
+        ]);
+      }
+      if (answers.pension.annualContribution > 0) {
+        applyQuickStartContribution(pensionAccountId, poundsToPence(answers.pension.annualContribution), contributionEndDate);
+      }
+    }
+
+    // ISA
+    if (answers.isa.balance > 0 || answers.isa.annualContribution > 0) {
+      const existingIsa = isaAccounts[0];
+      const isaAccountId = existingIsa?.id ?? generateId("isa");
+      if (existingIsa) {
+        setIsaAccounts((prev) => prev.map((a, i) => (i === 0 ? { ...a, currentBalance: answers.isa.balance } : a)));
+      } else {
+        setIsaAccounts((prev) => [...prev, { id: isaAccountId, owner: PERSON_ID, currentBalance: answers.isa.balance, annualGrowthRate: 0 }]);
+      }
+      if (answers.isa.annualContribution > 0) {
+        applyQuickStartContribution(isaAccountId, poundsToPence(answers.isa.annualContribution), contributionEndDate);
+      }
+    }
+
+    // GIA
+    if (answers.gia.balance > 0 || answers.gia.annualContribution > 0) {
+      const existingGia = giaAccounts[0];
+      const giaAccountId = existingGia?.id ?? generateId("gia");
+      if (existingGia) {
+        setGiaAccounts((prev) => prev.map((a, i) => (i === 0 ? { ...a, currentBalance: answers.gia.balance } : a)));
+      } else {
+        setGiaAccounts((prev) => [
+          ...prev,
+          {
+            id: giaAccountId,
+            owner: PERSON_ID,
+            currentBalance: answers.gia.balance,
+            costBasis: answers.gia.balance,
+            annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
+            annualDividendYield: 0,
+          },
+        ]);
+      }
+      if (answers.gia.annualContribution > 0) {
+        applyQuickStartContribution(giaAccountId, poundsToPence(answers.gia.annualContribution), contributionEndDate);
+      }
+    }
+
+    // Cash
+    if (answers.cash.balance > 0 || answers.cash.annualContribution > 0) {
+      const existingCash = cashAccounts[0];
+      const cashAccountId = existingCash?.id ?? generateId("cash");
+      if (existingCash) {
+        setCashAccounts((prev) => prev.map((a, i) => (i === 0 ? { ...a, currentBalance: answers.cash.balance } : a)));
+      } else {
+        setCashAccounts((prev) => [...prev, { id: cashAccountId, owner: PERSON_ID, currentBalance: answers.cash.balance, annualGrowthRate: 0 }]);
+      }
+      if (answers.cash.annualContribution > 0) {
+        applyQuickStartContribution(cashAccountId, poundsToPence(answers.cash.annualContribution), contributionEndDate);
+      }
+    }
+
+    // State Pension — only added if genuinely absent, never overwriting one the user's already customised.
+    if (!incomeSources.some((s) => s.type === "statePension")) {
+      const definition = registry.getIncomeSource("statePension");
+      const config = createDefaultConfig(definition.fields);
+      const { fullWeeklyAmount } = getLatestConfirmedRuleSet().statePension;
+      config.annualForecastAmount = poundsToPence(fullWeeklyAmount * 52);
+      const startDate = isoDateFromAge(answers.dateOfBirth, statePensionAge);
+      setIncomeSources((prev) => [...prev, { id: generateId("src"), type: "statePension", owner: PERSON_ID, config, startDate }]);
+    }
   };
 
   const canSubmit = dateOfBirth.length > 0 && (!hasSecondPerson || personBDateOfBirth.length > 0);
@@ -569,7 +733,35 @@ export function Onboarding() {
     if (liveScenario) setScenario(liveScenario);
   }, [liveScenario, setScenario]);
 
+  // What QuickStartWizard starts pre-filled with — always read from
+  // current live state (never "was this still at its untouched default"),
+  // so it naturally shows £0/blank for a fresh plan and whatever's
+  // actually there otherwise, matching applyQuickStart's own idempotent
+  // "update the first existing one" behaviour above.
+  const firstDrawdownTargetConfig = drawdownTargets[0]?.config as TargetDrawdownIncomeConfig | undefined;
+  const quickStartContributionFor = (accountId: string | undefined): number => {
+    if (!accountId) return 0;
+    const source = incomeSources.find(
+      (s) => s.type === "generalCashIncome" && (s.config as { destinationAccountId?: string }).destinationAccountId === accountId,
+    );
+    return source ? penceToPounds((source.config as { amount: Pence }).amount) : 0;
+  };
+  const firstPension = pensionAccounts[0];
+  const firstIsa = isaAccounts[0];
+  const firstGia = giaAccounts[0];
+  const firstCash = cashAccounts[0];
+  const quickStartDefaults: QuickStartAnswers = {
+    dateOfBirth,
+    retirementAge: firstDrawdownTargetConfig?.startAge ?? DEFAULT_TARGET_RETIREMENT_AGE,
+    targetAnnualIncome: firstDrawdownTargetConfig ? penceToPounds(firstDrawdownTargetConfig.targetNetAnnualIncome) : 0,
+    pension: { balance: firstPension?.currentBalance ?? 0, annualContribution: quickStartContributionFor(firstPension?.id) },
+    isa: { balance: firstIsa?.currentBalance ?? 0, annualContribution: quickStartContributionFor(firstIsa?.id) },
+    gia: { balance: firstGia?.currentBalance ?? 0, annualContribution: quickStartContributionFor(firstGia?.id) },
+    cash: { balance: firstCash?.currentBalance ?? 0, annualContribution: quickStartContributionFor(firstCash?.id) },
+  };
+
   return (
+    <>
     <AppShell
       header={{ height: 56 }}
       navbar={{ width: 460, breakpoint: "sm", collapsed: { mobile: !navOpened } }}
@@ -596,6 +788,9 @@ export function Onboarding() {
       <AppShell.Navbar p="md">
         <ScrollArea offsetScrollbars="y">
           <Stack gap="xl" pb="xl">
+            <Button variant="light" onClick={() => setQuickStartOpened(true)}>
+              Quick start
+            </Button>
             <Stack gap="sm">
               <Title order={4}>About you</Title>
         <TextInput
@@ -806,7 +1001,7 @@ export function Onboarding() {
                   id: generateId("pension"),
                   owner: PERSON_ID,
                   currentBalance: 0,
-                  annualGrowthRate: 0,
+                  annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
                   annualChargeRate: 0.0005,
                   employerAnnualContribution: 0,
                   // SIPPs can't be drawn from before the Normal Minimum
@@ -835,7 +1030,14 @@ export function Onboarding() {
             onClick={() =>
               setGiaAccounts((prev) => [
                 ...prev,
-                { id: generateId("gia"), owner: PERSON_ID, currentBalance: 0, costBasis: 0, annualGrowthRate: 0, annualDividendYield: 0 },
+                {
+                  id: generateId("gia"),
+                  owner: PERSON_ID,
+                  currentBalance: 0,
+                  costBasis: 0,
+                  annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
+                  annualDividendYield: 0,
+                },
               ])
             }
           >
@@ -959,6 +1161,10 @@ export function Onboarding() {
         </Group>
       </AppShell.Footer>
     </AppShell>
+    {quickStartOpened && (
+      <QuickStartWizard existingAnswers={quickStartDefaults} onClose={() => setQuickStartOpened(false)} onComplete={applyQuickStart} />
+    )}
+    </>
   );
 }
 
