@@ -16,8 +16,8 @@ export default defineConfig({
       registerType: "prompt", // a new deploy prompts the user to refresh, never swaps silently (SPEC.md §9.8)
       includeAssets: ["icons/*.svg"],
       manifest: {
-        name: "UK Retirement Planner",
-        short_name: "Retirement Planner",
+        name: "Can I Stop? — UK Retirement Planner",
+        short_name: "Can I Stop",
         description:
           "A UK retirement and financial planning calculator that runs entirely in your browser — nothing is ever sent to a server.",
         theme_color: "#1c7ed6",
