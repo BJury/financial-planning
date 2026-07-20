@@ -596,18 +596,36 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   const chartEvents = useMemo(() => (scenario && result ? buildChartEvents(scenario, result) : []), [scenario, result]);
   // Two or more events can land on the same tax year (e.g. "Drawdown
   // starts" and "SIPP starts" both firing the moment decumulation
-  // begins) — their labels would otherwise sit on top of each other and
-  // become unreadable. Stack same-year labels at increasing heights
-  // instead, and grow the chart's top margin to fit however tall the
-  // tallest stack turns out to be.
+  // begins), or on years merely close together (e.g. two people's State
+  // Pension starting a year apart) — a label like "State Pension starts
+  // (Partner)" is far wider than the horizontal gap between two adjacent
+  // tax-year ticks, so even distinct years' labels can visually collide.
+  // Stack any labels within `collisionWindow` tax years of each other at
+  // increasing heights instead (a greedy interval-colouring pass, sorted
+  // chronologically — the same idea as the old same-year-only version,
+  // generalised from "exact match" to "close enough"), and grow the
+  // chart's top margin to fit however tall the tallest stack turns out to
+  // be. The window widens as the projection covers more years, since more
+  // years packed into the same chart width means less room between ticks.
   const stackedChartEvents = useMemo(() => {
-    const countByTaxYear = new Map<string, number>();
-    return chartEvents.map((e) => {
-      const stackIndex = countByTaxYear.get(e.taxYear) ?? 0;
-      countByTaxYear.set(e.taxYear, stackIndex + 1);
-      return { ...e, stackIndex };
-    });
-  }, [chartEvents]);
+    if (!result) return [];
+    const rowIndexByTaxYear = new Map(result.rows.map((row, i) => [row.taxYear, i]));
+    const collisionWindow = Math.max(2, Math.ceil(result.rows.length / 10));
+    const sorted = [...chartEvents].sort(
+      (a, b) => (rowIndexByTaxYear.get(a.taxYear) ?? 0) - (rowIndexByTaxYear.get(b.taxYear) ?? 0),
+    );
+    const placed: { readonly rowIndex: number; readonly stackIndex: number }[] = [];
+    const stackIndexByKey = new Map<string, number>();
+    for (const event of sorted) {
+      const rowIndex = rowIndexByTaxYear.get(event.taxYear) ?? 0;
+      const usedLevels = new Set(placed.filter((p) => Math.abs(p.rowIndex - rowIndex) < collisionWindow).map((p) => p.stackIndex));
+      let stackIndex = 0;
+      while (usedLevels.has(stackIndex)) stackIndex++;
+      placed.push({ rowIndex, stackIndex });
+      stackIndexByKey.set(event.key, stackIndex);
+    }
+    return chartEvents.map((e) => ({ ...e, stackIndex: stackIndexByKey.get(e.key) ?? 0 }));
+  }, [chartEvents, result]);
   const maxEventStackSize = useMemo(
     () => stackedChartEvents.reduce((max, e) => Math.max(max, e.stackIndex + 1), 0),
     [stackedChartEvents],
