@@ -6,11 +6,13 @@ import {
   totalTaxForYear,
   zeroPence,
   type Account,
+  type IncomeSourceInstance,
   type Owner,
   type Pence,
   type Person,
   type ProjectionResult,
   type Scenario,
+  type TargetDrawdownIncomeConfig,
   type YearLedgerRow,
 } from "@fp/engine";
 import { Alert, Button, Center, Group, MultiSelect, Select, Stack, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
@@ -30,23 +32,61 @@ interface ChartMetric {
   readonly compute: (row: YearLedgerRow) => number;
   /** Only set for a per-account metric — lets the year-by-year table pick out just the pension/ISA/GIA/cash balance columns without re-deriving account info from the key string. */
   readonly accountKind?: Account["kind"];
+  /**
+   * Which of the two charts this metric belongs on — a balance (net
+   * worth, any single account) sits at a scale of tens/hundreds of
+   * thousands, while a flow (income, tax) is typically an order of
+   * magnitude or two smaller; plotted together on one axis, a flow line
+   * flattens to an invisible sliver against the balances. Split into two
+   * separate charts sharing the same X-axis instead of one axis trying
+   * to serve both scales at once.
+   */
+  readonly scale: "balance" | "flow";
 }
 
 const CHART_METRICS: readonly ChartMetric[] = [
-  { key: "netWorth", label: "Net worth", color: "#1c7ed6", compute: (row) => penceToPounds(computeNetWorth(row)) },
+  { key: "netWorth", label: "Net worth", color: "#1c7ed6", scale: "balance", compute: (row) => penceToPounds(computeNetWorth(row)) },
   {
     key: "grossIncome",
     label: "Gross income",
     color: "#0ca678",
+    scale: "flow",
     compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.grossIncome))),
   },
   {
     key: "netIncome",
     label: "Net income",
     color: "#2f9e44",
-    compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.netIncome))),
+    scale: "flow",
+    // Deliberately *not* the engine's own `PersonYearResult.netIncome`
+    // field — that one is further reduced by living expenses/
+    // contributions and by auto-consumption (achieving a drawdown target
+    // counts as spent, SPEC.md §5.7.2), so it usually settles at/near £0
+    // and doesn't answer "how much came in this year" (this bit the
+    // year-by-year table's own "Net income" column too, once — see its
+    // near-identical comment a bit further down). Recomputed here from
+    // the same already-tracked per-source figures instead, kept in sync
+    // with that column's own formula by hand since there isn't a single
+    // shared helper both pull from.
+    compute: (row) =>
+      penceToPounds(
+        subtractPence(
+          sumPence(
+            row.perPerson.flatMap((p) => [
+              p.grossIncome,
+              p.rentalProfitIncome,
+              p.statePensionIncome,
+              p.drawdownNetAchieved,
+              p.taxFreeIncome,
+              p.mortgageInterestCredit,
+              p.propertySaleNetProceeds,
+            ]),
+          ),
+          sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax])),
+        ),
+      ),
   },
-  { key: "totalTax", label: "Total tax", color: "#e03131", compute: (row) => penceToPounds(totalTaxForYear(row)) },
+  { key: "totalTax", label: "Total tax", color: "#e03131", scale: "flow", compute: (row) => penceToPounds(totalTaxForYear(row)) },
 ];
 
 const ACCOUNT_LINE_COLORS = ["#7048e8", "#ae3ec9", "#f76707", "#1098ad", "#f08c00", "#e64980", "#4263eb", "#37b24d", "#fa5252", "#5c940d"];
@@ -207,6 +247,9 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         // so it usually settles at/near £0 and doesn't answer "how much
         // came in" — this column recomputes the total from the same
         // already-tracked per-source figures, without those subtractions.
+        // CHART_METRICS' own "netIncome" line (above) uses this exact
+        // same formula, kept in sync by hand — no shared helper exists
+        // for it yet.
         compute: (row) =>
           subtractPence(
             sumPence(
@@ -352,6 +395,7 @@ function buildAccountMetrics(scenario: Scenario): readonly ChartMetric[] {
       label,
       color: ACCOUNT_LINE_COLORS[index % ACCOUNT_LINE_COLORS.length] ?? "#868e96",
       accountKind: account.kind,
+      scale: "balance" as const,
       compute: (row: YearLedgerRow) => {
         const balance = penceToPounds(row.accountBalances.get(account.id) ?? zeroPence());
         if (account.kind !== "property") return balance;
@@ -359,6 +403,73 @@ function buildAccountMetrics(scenario: Scenario): readonly ChartMetric[] {
       },
     };
   });
+}
+
+/**
+ * One selectable line per income source *type* actually present in the
+ * plan (not per instance — the engine's own per-year result is only
+ * broken down by tax category, e.g. every Salary a person has combines
+ * into one `grossIncome` figure, not one per catalog instance, so that's
+ * the finest granularity available without an engine change). A one-off
+ * inflow and general cash income share the same `taxFreeIncome` bucket
+ * for the same reason, so they're combined into a single "Tax-free
+ * income" line rather than shown as two identical-looking ones. Property
+ * sale proceeds aren't included — a planned sale lives on the account
+ * itself (`Property.plannedSale`), not in `scenario.incomeSources`, so it
+ * isn't one of "the income sources" in the same sense as everything else
+ * here.
+ */
+function buildIncomeSourceMetrics(scenario: Scenario): readonly ChartMetric[] {
+  const types = new Set(scenario.incomeSources.map((s) => s.type));
+  const metrics: ChartMetric[] = [];
+
+  if (types.has("salary")) {
+    metrics.push({
+      key: "income:salary",
+      label: "Salary",
+      color: "#0ca678",
+      scale: "flow",
+      compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.grossIncome))),
+    });
+  }
+  if (types.has("statePension")) {
+    metrics.push({
+      key: "income:statePension",
+      label: "State Pension",
+      color: "#f08c00",
+      scale: "flow",
+      compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.statePensionIncome))),
+    });
+  }
+  if (types.has("rentalIncome")) {
+    metrics.push({
+      key: "income:rentalIncome",
+      label: "Rental income",
+      color: "#5c940d",
+      scale: "flow",
+      compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.rentalProfitIncome))),
+    });
+  }
+  if (types.has("targetDrawdownIncome")) {
+    metrics.push({
+      key: "income:drawdown",
+      label: "Drawdown income",
+      color: "#1971c2",
+      scale: "flow",
+      compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.drawdownNetAchieved))),
+    });
+  }
+  if (types.has("oneOffInflow") || types.has("generalCashIncome")) {
+    metrics.push({
+      key: "income:taxFree",
+      label: "Tax-free income",
+      color: "#ae3ec9",
+      scale: "flow",
+      compute: (row) => penceToPounds(sumPence(row.perPerson.map((p) => p.taxFreeIncome))),
+    });
+  }
+
+  return metrics;
 }
 
 interface KeyFlag {
@@ -490,20 +601,61 @@ function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonl
     events.push({ key: `sale:${account.id}`, taxYear, label: "Sale", color: "#7048e8" });
   }
 
-  // The first year any actual money is drawn (SPEC.md §5.7.2) — not the
-  // target's own configured "starts at age", since the target is now
-  // netted against salary/State Pension/other automatic income
-  // (`adjustDrawdownTargetForAutomaticIncome.ts`) and may stay fully
-  // covered by that income for years after the target technically
-  // becomes active, with nothing actually drawn yet. Marking the
-  // configured start age would be misleading in that case; marking the
-  // first real withdrawal is what's actually useful to see on the chart.
-  const firstDrawdownYear = result.rows.find((row) => row.perPerson.some((p) => p.drawdownNetAchieved > 0));
-  if (firstDrawdownYear) {
-    events.push({ key: "drawdown-start", taxYear: firstDrawdownYear.taxYear, label: "Drawdown starts", color: "#1971c2" });
-  }
-
   const { people } = scenario.household;
+
+  // Each targetDrawdownIncome phase's own configured start/end age
+  // (SPEC.md §5.7.1's step phases) — distinct from "Drawdown starts"
+  // above, which marks when money is *actually* first withdrawn; this
+  // instead visualises the plan's own structure, e.g. seeing exactly
+  // where "£80,000 from 55, then £50,000 from 70" steps down. An end is
+  // only marked when it doesn't already coincide with another phase's
+  // own start for the same owner — per the engine's own implicit-next-
+  // phase inference (targetDrawdownIncome.ts's nextPhaseStartAge), that's
+  // not a genuine end at all, just the same transition point a "starts"
+  // event for the next phase already marks; showing both would be two
+  // labels for the exact same moment. The untouched £0 default phase
+  // every plan starts with is skipped entirely, same as
+  // `hasActiveDrawdownTarget` does elsewhere.
+  const ageToTaxYear = (owner: Owner, age: number): string | undefined => {
+    const person = owner === "joint" ? people[0] : people.find((p) => p.id === owner);
+    if (!person) return undefined;
+    const dob = new Date(person.dateOfBirth);
+    if (Number.isNaN(dob.getTime())) return undefined;
+    return result.rows.find((row) => row.calendarYear === dob.getUTCFullYear() + age)?.taxYear;
+  };
+  const drawdownPhases = scenario.incomeSources.filter(
+    (s): s is IncomeSourceInstance<TargetDrawdownIncomeConfig> => s.type === "targetDrawdownIncome" && (s.config as TargetDrawdownIncomeConfig).targetNetAnnualIncome > 0,
+  );
+  for (const phase of drawdownPhases) {
+    const config = phase.config;
+    const suffix = people.length > 1 ? ` (${ownerLabel(phase.owner, people)})` : "";
+    const amountLabel = `£${penceToPounds(config.targetNetAnnualIncome).toLocaleString()}`;
+
+    const startTaxYear = ageToTaxYear(phase.owner, config.startAge);
+    if (startTaxYear) {
+      events.push({
+        key: `drawdown-phase-start:${phase.id}`,
+        taxYear: startTaxYear,
+        label: `${amountLabel} target starts${suffix}`,
+        color: "#e64980",
+      });
+    }
+
+    if (config.endAge !== undefined) {
+      const chainsIntoNextPhase = drawdownPhases.some(
+        (other) => other.id !== phase.id && other.owner === phase.owner && other.config.startAge === config.endAge,
+      );
+      const endTaxYear = chainsIntoNextPhase ? undefined : ageToTaxYear(phase.owner, config.endAge);
+      if (endTaxYear) {
+        events.push({
+          key: `drawdown-phase-end:${phase.id}`,
+          taxYear: endTaxYear,
+          label: `${amountLabel} target ends${suffix}`,
+          color: "#e64980",
+        });
+      }
+    }
+  }
 
   // Salary starting/stopping, per person. `grossIncome` is exclusively
   // earned income (SPEC.md §3.2 — Salary is the only catalog type tagged
@@ -616,6 +768,163 @@ function computeShortfallRanges(result: ProjectionResult): readonly ShortfallRan
   return ranges;
 }
 
+function formatCurrencyTick(v: number): string {
+  return `£${v.toLocaleString()}`;
+}
+
+// The exact font both charts' Y-axis ticks render in (`CHART_TICK_STYLE`
+// below) — kept as one shared constant so `measureTextWidth`'s canvas
+// measurement can never quietly drift out of sync with what's actually
+// on screen.
+const CHART_TICK_FONT_SIZE = 12;
+const CHART_TICK_FONT_FAMILY =
+  "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji'";
+const CHART_TICK_STYLE = { fontSize: CHART_TICK_FONT_SIZE };
+
+let measurementCanvasContext: CanvasRenderingContext2D | null | undefined;
+
+/**
+ * The real, rendered pixel width of a tick label — a canvas measurement,
+ * not an estimate. An earlier version of this guessed ~7px/character,
+ * which was close enough to *look* right but not exact, so the two
+ * charts' Y-axes (each computing their own "close enough" width off
+ * different numbers) still didn't quite line up. Measuring the actual
+ * font removes that whole class of error. The canvas/context itself is
+ * memoised (cheap to reuse, wasteful to recreate per call); the
+ * measurement result is not, since it depends on the text.
+ */
+function measureTextWidth(text: string): number {
+  if (measurementCanvasContext === undefined) {
+    measurementCanvasContext = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  }
+  if (!measurementCanvasContext) return text.length * 7; // non-browser fallback — never actually hit in this client-only app
+  measurementCanvasContext.font = `${CHART_TICK_FONT_SIZE}px ${CHART_TICK_FONT_FAMILY}`;
+  return measurementCanvasContext.measureText(text).width;
+}
+
+/**
+ * A shared Y-axis width for both charts. Recharts' `YAxis width` is a
+ * fixed pixel allocation, not an automatic fit — leaving each chart to
+ * size its own axis off only *its own* values means the balances chart
+ * (needing room for "£1,600,000") and the income chart (needing far
+ * less, for "£40,000") end up with different-width axis gutters, so
+ * their plot areas start at different X-offsets and visibly don't line
+ * up. Computed once from the single longest formatted label across
+ * *every* line on *both* charts, and applied to both, so their left
+ * edges always match regardless of which one actually needs more room.
+ */
+function estimateSharedYAxisWidth(chartData: readonly Record<string, unknown>[], metricGroups: readonly (readonly ChartMetric[])[]): number {
+  let maxAbs = 0;
+  for (const metrics of metricGroups) {
+    for (const row of chartData) {
+      for (const m of metrics) {
+        const value = Number(row[m.key]) || 0;
+        maxAbs = Math.max(maxAbs, Math.abs(value));
+      }
+    }
+  }
+  const longestLabel = formatCurrencyTick(Math.round(maxAbs));
+  return Math.max(60, Math.ceil(measureTextWidth(longestLabel)) + 24);
+}
+
+/**
+ * One `<LineChart>`, reused for both the balances chart and the income
+ * chart below it — same `chartData`/X-axis/events/shortfall shading, so
+ * the two stay pixel-aligned and visually consistent, differing only in
+ * which metrics (and therefore which Y-axis scale) they plot. Splitting
+ * this out is what actually *guarantees* that alignment, rather than
+ * hoping two hand-written, independently-edited chart blocks never drift
+ * apart from each other.
+ */
+function ProjectionLineChart({
+  chartData,
+  visibleMetrics,
+  axisMode,
+  chartTextColor,
+  chartGridColor,
+  isDark,
+  stackedChartEvents,
+  shortfallRanges,
+  axisValueByTaxYear,
+  maxEventStackSize,
+  emptyMessage,
+  yAxisWidth,
+}: {
+  // Not `readonly` — recharts' own `LineChart` prop type wants a plain
+  // mutable array; `chartData` is already a freshly-built one from
+  // `.map()`, so nothing is actually at risk of being mutated here.
+  readonly chartData: Record<string, unknown>[];
+  readonly visibleMetrics: readonly ChartMetric[];
+  readonly axisMode: RowAxisMode;
+  readonly chartTextColor: string;
+  readonly chartGridColor: string;
+  readonly isDark: boolean;
+  readonly stackedChartEvents: readonly (ChartEvent & { readonly stackIndex: number })[];
+  readonly shortfallRanges: readonly ShortfallRange[];
+  readonly axisValueByTaxYear: ReadonlyMap<string, string | number>;
+  readonly maxEventStackSize: number;
+  readonly emptyMessage: string;
+  /** Shared across both charts (`estimateSharedYAxisWidth`) — see that function's own comment for why this can't just be each chart's own default. */
+  readonly yAxisWidth: number;
+}) {
+  return (
+    <div style={{ height: 300 }}>
+      {visibleMetrics.length === 0 ? (
+        <Center h="100%">
+          <Text c="dimmed">{emptyMessage}</Text>
+        </Center>
+      ) : (
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData} margin={{ top: 24 + Math.max(0, maxEventStackSize - 1) * 12, right: 20, bottom: 10, left: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
+            {shortfallRanges.map((r) => (
+              <ReferenceArea
+                key={`shortfall:${r.start}`}
+                x1={axisValueByTaxYear.get(r.start) ?? r.start}
+                x2={axisValueByTaxYear.get(r.end) ?? r.end}
+                fill="#e03131"
+                fillOpacity={0.1}
+                ifOverflow="extendDomain"
+              />
+            ))}
+            <XAxis
+              dataKey="axisValue"
+              type="category"
+              tickFormatter={(v: string | number) => (axisMode === "taxYear" ? (String(v).split("-")[0] ?? String(v)) : String(v))}
+              tick={{ fill: chartTextColor }}
+              stroke={chartGridColor}
+            />
+            <YAxis
+              width={yAxisWidth}
+              tickFormatter={formatCurrencyTick}
+              tick={{ fill: chartTextColor, ...CHART_TICK_STYLE }}
+              stroke={chartGridColor}
+            />
+            <Tooltip
+              formatter={(v: number) => `£${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+              contentStyle={{ backgroundColor: isDark ? "#25262B" : "#fff", borderColor: chartGridColor, color: chartTextColor }}
+            />
+            <Legend wrapperStyle={{ color: chartTextColor }} />
+            {visibleMetrics.map((m) => (
+              <Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} strokeWidth={2} />
+            ))}
+            {stackedChartEvents.map((e) => (
+              <ReferenceLine
+                key={e.key}
+                x={axisValueByTaxYear.get(e.taxYear) ?? e.taxYear}
+                stroke={e.color}
+                strokeDasharray="4 4"
+                ifOverflow="extendDomain"
+                label={{ value: e.label, position: "top", fill: e.color, fontSize: 10, offset: 8 + e.stackIndex * 12 }}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
 /**
  * The main-area results pane (SPEC.md §4 journey 2, §7): a minimal
  * net-worth chart and a year-by-year table, all figures in today's
@@ -641,10 +950,11 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
     }
   }, [axisMode, scenario]);
   // A view preference, not part of the financial plan — kept as local
-  // component state rather than on the Scenario, and starts with just
-  // "Net worth" selected so the chart looks the same as before this line
-  // picker existed.
-  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["netWorth"]);
+  // component state rather than on the Scenario. "Net worth" seeds the
+  // balances chart the same way it always has; "Net income" seeds the
+  // income chart below it so that one isn't an empty placeholder by
+  // default either.
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["netWorth", "netIncome"]);
 
   const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
   const keyFlags = useMemo(() => computeKeyFlags(result, scenario), [result, scenario]);
@@ -687,7 +997,11 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   );
   const shortfallRanges = useMemo(() => (result ? computeShortfallRanges(result) : []), [result]);
   const accountMetrics = useMemo(() => (scenario ? buildAccountMetrics(scenario) : []), [scenario]);
-  const allMetrics = useMemo(() => [...CHART_METRICS, ...accountMetrics], [accountMetrics]);
+  const incomeSourceMetrics = useMemo(() => (scenario ? buildIncomeSourceMetrics(scenario) : []), [scenario]);
+  const allMetrics = useMemo(
+    () => [...CHART_METRICS, ...accountMetrics, ...incomeSourceMetrics],
+    [accountMetrics, incomeSourceMetrics],
+  );
   const balanceMetrics = useMemo(
     () => accountMetrics.filter((m) => m.accountKind === "pension" || m.accountKind === "isa" || m.accountKind === "gia" || m.accountKind === "cash"),
     [accountMetrics],
@@ -765,7 +1079,10 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
     ...Object.fromEntries(allMetrics.map((m) => [m.key, m.compute(row)])),
   }));
   const axisValueByTaxYear = new Map(chartData.map((d) => [d.taxYear, d.axisValue]));
-  const visibleMetrics = allMetrics.filter((m) => selectedMetrics.includes(m.key));
+  const selectedVisibleMetrics = allMetrics.filter((m) => selectedMetrics.includes(m.key));
+  const visibleBalanceMetrics = selectedVisibleMetrics.filter((m) => m.scale === "balance");
+  const visibleFlowMetrics = selectedVisibleMetrics.filter((m) => m.scale === "flow");
+  const sharedYAxisWidth = estimateSharedYAxisWidth(chartData, [visibleBalanceMetrics, visibleFlowMetrics]);
 
   return (
     <Stack gap="xl">
@@ -810,73 +1127,58 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           ...(accountMetrics.length > 0
             ? [{ group: "Account balances", items: accountMetrics.map((m) => ({ value: m.key, label: m.label })) }]
             : []),
+          ...(incomeSourceMetrics.length > 0
+            ? [{ group: "Income sources", items: incomeSourceMetrics.map((m) => ({ value: m.key, label: m.label })) }]
+            : []),
         ]}
         value={selectedMetrics}
         onChange={setSelectedMetrics}
-        maw={480}
       />
 
       {(chartEvents.length > 0 || shortfallRanges.length > 0) && (
         <Text size="xs" c="dimmed">
-          {chartEvents.length > 0 && "Dashed lines mark one-off events and when drawdown starts. "}
+          {chartEvents.length > 0 && "Dashed lines mark one-off events and when income sources or drawdown targets change. "}
           {shortfallRanges.length > 0 && "Shaded red bands mark years a drawdown target isn't fully met."}
         </Text>
       )}
 
-      <div style={{ height: 300 }}>
-        {visibleMetrics.length === 0 ? (
-          <Center h="100%">
-            <Text c="dimmed">Select at least one line above to show a chart.</Text>
-          </Center>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 24 + Math.max(0, maxEventStackSize - 1) * 12, right: 20, bottom: 10, left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
-              {shortfallRanges.map((r) => (
-                <ReferenceArea
-                  key={`shortfall:${r.start}`}
-                  x1={axisValueByTaxYear.get(r.start) ?? r.start}
-                  x2={axisValueByTaxYear.get(r.end) ?? r.end}
-                  fill="#e03131"
-                  fillOpacity={0.1}
-                  ifOverflow="extendDomain"
-                />
-              ))}
-              <XAxis
-                dataKey="axisValue"
-                type="category"
-                tickFormatter={(v: string | number) => (axisMode === "taxYear" ? (String(v).split("-")[0] ?? String(v)) : String(v))}
-                tick={{ fill: chartTextColor }}
-                stroke={chartGridColor}
-              />
-              <YAxis
-                width={90}
-                tickFormatter={(v: number) => `£${v.toLocaleString()}`}
-                tick={{ fill: chartTextColor }}
-                stroke={chartGridColor}
-              />
-              <Tooltip
-                formatter={(v: number) => `£${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
-                contentStyle={{ backgroundColor: isDark ? "#25262B" : "#fff", borderColor: chartGridColor, color: chartTextColor }}
-              />
-              <Legend wrapperStyle={{ color: chartTextColor }} />
-              {visibleMetrics.map((m) => (
-                <Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} strokeWidth={2} />
-              ))}
-              {stackedChartEvents.map((e) => (
-                <ReferenceLine
-                  key={e.key}
-                  x={axisValueByTaxYear.get(e.taxYear) ?? e.taxYear}
-                  stroke={e.color}
-                  strokeDasharray="4 4"
-                  ifOverflow="extendDomain"
-                  label={{ value: e.label, position: "top", fill: e.color, fontSize: 10, offset: 8 + e.stackIndex * 12 }}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        )}
-      </div>
+      <Stack gap="xs">
+        <Text size="sm" fw={600}>
+          Account Balances
+        </Text>
+        <ProjectionLineChart
+          chartData={chartData}
+          visibleMetrics={visibleBalanceMetrics}
+          axisMode={axisMode}
+          chartTextColor={chartTextColor}
+          chartGridColor={chartGridColor}
+          isDark={isDark}
+          stackedChartEvents={stackedChartEvents}
+          shortfallRanges={shortfallRanges}
+          axisValueByTaxYear={axisValueByTaxYear}
+          maxEventStackSize={maxEventStackSize}
+          emptyMessage="Select at least one line above to show a chart."
+          yAxisWidth={sharedYAxisWidth}
+        />
+
+        <Text size="sm" fw={600}>
+          Income
+        </Text>
+        <ProjectionLineChart
+          chartData={chartData}
+          visibleMetrics={visibleFlowMetrics}
+          axisMode={axisMode}
+          chartTextColor={chartTextColor}
+          chartGridColor={chartGridColor}
+          isDark={isDark}
+          stackedChartEvents={stackedChartEvents}
+          shortfallRanges={shortfallRanges}
+          axisValueByTaxYear={axisValueByTaxYear}
+          maxEventStackSize={maxEventStackSize}
+          emptyMessage="Select an income or tax line above to show this chart."
+          yAxisWidth={sharedYAxisWidth}
+        />
+      </Stack>
 
       <Group justify="space-between">
         <Group gap={4}>

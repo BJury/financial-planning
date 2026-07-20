@@ -1,4 +1,4 @@
-import { addPence, penceToPounds, sumPence, type Pence, type ProjectionResult } from "@fp/engine";
+import { addPence, penceToPounds, subtractPence, sumPence, type Pence, type ProjectionResult } from "@fp/engine";
 import { computeNetWorth } from "./projection.js";
 
 const COLUMNS = [
@@ -50,6 +50,27 @@ export function projectionToCsv(result: ProjectionResult): string {
     const netWorth = money(computeNetWorth(row));
     for (const [index, person] of row.perPerson.entries()) {
       const label = row.perPerson.length > 1 ? (index === 0 ? "Person 1" : "Person 2") : "";
+      // Deliberately *not* `person.netIncome` — that engine field is
+      // further reduced by living expenses/contributions and by
+      // auto-consumption (achieving a drawdown target counts as spent,
+      // SPEC.md §5.7.2), so it usually settles at/near £0 and doesn't
+      // answer "how much came in this year". Same recomputation as the
+      // year-by-year table's own "Net income" column and the projection
+      // chart's own "Net income" line (ProjectionResults.tsx), narrowed
+      // to this one person instead of summed across the household —
+      // kept in sync with both by hand, no shared helper exists yet.
+      const netIncome = subtractPence(
+        sumPence([
+          person.grossIncome,
+          person.rentalProfitIncome,
+          person.statePensionIncome,
+          person.drawdownNetAchieved,
+          person.taxFreeIncome,
+          person.mortgageInterestCredit,
+          person.propertySaleNetProceeds,
+        ]),
+        sumPence([person.incomeTax, person.nationalInsurance, person.annualAllowanceCharge, person.savingsTax, person.dividendTax]),
+      );
       lines.push(
         [
           row.taxYear,
@@ -67,7 +88,7 @@ export function projectionToCsv(result: ProjectionResult): string {
           money(person.mortgageInterestCredit),
           money(person.propertySaleNetProceeds),
           money(person.shortfallFundedFromSavings),
-          money(person.netIncome),
+          money(netIncome),
           netWorth,
         ]
           .map((field) => csvField(field))
