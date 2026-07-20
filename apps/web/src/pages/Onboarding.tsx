@@ -864,6 +864,8 @@ export function Onboarding() {
             inflationRate={inflationRate}
             dateOfBirth={dateOfBirth}
             personBDateOfBirth={personBDateOfBirth}
+            statePensionAge={statePensionAge}
+            personBStatePensionAge={personBStatePensionAge}
             onChange={(updated) => setIncomeSources((prev) => prev.map((s) => (s.id === updated.id ? (updated as IncomeSourceInstance) : s)))}
             onRemove={() => setIncomeSources((prev) => prev.filter((s) => s.id !== source.id))}
           />
@@ -890,6 +892,8 @@ export function Onboarding() {
             inflationRate={inflationRate}
             dateOfBirth={dateOfBirth}
             personBDateOfBirth={personBDateOfBirth}
+            statePensionAge={statePensionAge}
+            personBStatePensionAge={personBStatePensionAge}
             onChange={(updated) => setIncomeDrains((prev) => prev.map((d) => (d.id === updated.id ? (updated as IncomeDrainInstance) : d)))}
             onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
           />
@@ -1574,6 +1578,8 @@ function CatalogInstanceCard({
   inflationRate,
   dateOfBirth,
   personBDateOfBirth,
+  statePensionAge,
+  personBStatePensionAge,
   onChange,
   onRemove,
 }: {
@@ -1588,11 +1594,24 @@ function CatalogInstanceCard({
   readonly inflationRate: number;
   readonly dateOfBirth: string;
   readonly personBDateOfBirth: string;
+  readonly statePensionAge: number;
+  readonly personBStatePensionAge: number;
   readonly onChange: (instance: IncomeSourceInstance | IncomeDrainInstance) => void;
   readonly onRemove: () => void;
 }) {
   const definition = kind === "source" ? registry.getIncomeSource(instance.type) : registry.getIncomeDrain(instance.type);
   const ownerDob = instance.owner === "joint" ? undefined : (instance.owner === PERSON_B_ID ? personBDateOfBirth : dateOfBirth) || undefined;
+  const ownerStatePensionAge = instance.owner === PERSON_B_ID ? personBStatePensionAge : statePensionAge;
+  // A State Pension card's own "Starts on" is only ever a manual override
+  // — the type is already independently gated on `Person.statePensionAge`
+  // (SPEC.md §3.3) regardless of this field, so leaving it unset is both
+  // safe and the common case. Shown here purely as a display default
+  // (never written back via onChange) so the field doesn't just look
+  // empty, and so it stays in sync if the "State Pension age" input up in
+  // "About you" changes later, rather than freezing at whatever it was
+  // when this card was first added.
+  const statePensionDefaultStartDate =
+    instance.type === "statePension" && ownerDob ? isoDateFromAge(ownerDob, ownerStatePensionAge) : undefined;
   const rentalProperties = properties.filter((p) => p.propertyType === "rental");
   const allowJointOwner = !PERSON_ONLY_CATALOG_TYPES.has(instance.type);
 
@@ -1721,8 +1740,10 @@ function CatalogInstanceCard({
         <Group grow mt="sm">
           <AgeOrDateInput
             label="Starts on"
-            description="Leave blank to start immediately"
-            value={instance.startDate ?? ""}
+            description={
+              instance.type === "statePension" ? "Defaults to your State Pension age above" : "Leave blank to start immediately"
+            }
+            value={instance.startDate ?? statePensionDefaultStartDate ?? ""}
             dateOfBirth={ownerDob}
             defaultMode={instance.type === "statePension" ? "age" : "date"}
             onChange={setStartDate}
