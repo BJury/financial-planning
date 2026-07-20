@@ -3397,3 +3397,137 @@ describe("runProjection — general cash income with a required cash/GIA/ISA/SIP
     expect(result.rows[1]?.accountBalances.get("cash1")).toBe(poundsToPence(1000));
   });
 });
+
+describe("runProjection — multiple targetDrawdownIncome instances as step phases (SPEC.md §5.7.1)", () => {
+  const PERSON_B_ID = personId("b");
+  // Age 65 in 2026, 66 in 2027, 67 in 2028 — a person's own DOB is the
+  // clock every targetDrawdownIncome instance's startAge/endAge is
+  // checked against.
+  const stepPerson: Person = { id: PERSON_ID, dateOfBirth: "1961-01-01", targetRetirementAge: 65, projectionEndAge: 95 };
+  const stepHousehold: Household = { people: [stepPerson], relationshipStatus: null, targetIncomeMode: "perPerson" };
+  const bigPension = {
+    kind: "pension" as const,
+    id: "pension1",
+    owner: PERSON_ID,
+    pensionType: "sipp" as const,
+    currentBalance: poundsToPence(2000000),
+    annualGrowthRate: 0,
+    annualChargeRate: 0,
+    employerAnnualContribution: pence(0),
+  };
+
+  it("steps from an earlier, higher target to a later, lower one — the two instances never both apply in the same year", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: stepHousehold,
+      accounts: [bigPension],
+      incomeSources: [
+        { id: "phase1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(80000), startAge: 65, endAge: 67 } },
+        { id: "phase2", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 67 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 3);
+
+    // 2026 (age 65) and 2027 (age 66) — phase 1 only.
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(80000));
+    expect(result.rows[1]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(80000));
+    // 2028 (age 67) — phase 1 has ended (age < endAge fails at exactly 67), phase 2 only.
+    expect(result.rows[2]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(50000));
+  });
+
+  it("with no endAge of its own, a phase implicitly stops where the next same-owner phase starts — no need to state the boundary twice", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: stepHousehold,
+      accounts: [bigPension],
+      incomeSources: [
+        // No endAge on phase 1 at all — still steps cleanly at 67, since
+        // phase 2's own startAge is picked up automatically.
+        { id: "phase1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(80000), startAge: 65 } },
+        { id: "phase2", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 67 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 3);
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(80000)); // 2026, age 65
+    expect(result.rows[1]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(80000)); // 2027, age 66
+    expect(result.rows[2]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(50000)); // 2028, age 67 — phase 1 implicitly ended, phase 2 only
+  });
+
+  it("picks up the nearest next phase, not just any later one, when three or more are chained with no explicit endAge", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: stepHousehold,
+      accounts: [bigPension],
+      incomeSources: [
+        { id: "phase1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(80000), startAge: 65 } },
+        { id: "phase2", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(60000), startAge: 66 } },
+        { id: "phase3", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 67 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 3);
+    expect(result.rows[0]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(80000)); // 2026, age 65 — phase 1
+    expect(result.rows[1]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(60000)); // 2027, age 66 — phase 2, not phase 1
+    expect(result.rows[2]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(50000)); // 2028, age 67 — phase 3
+  });
+
+  it("still sums two instances when a phase's own explicit endAge deliberately extends past the next phase's start — an explicit value always wins over the implicit next-phase inference", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: stepHousehold,
+      accounts: [bigPension],
+      incomeSources: [
+        // Explicitly stated to run to 68, one year past phase 2's own start at 67.
+        { id: "phase1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(80000), startAge: 65, endAge: 68 } },
+        { id: "phase2", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 67 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 3);
+    // 2028, age 67 — both phase 1 (explicitly still active) and phase 2 apply, summing.
+    expect(result.rows[2]?.perPerson[0]?.drawdownNetAchieved).toBe(poundsToPence(130000));
+  });
+
+  it("an individual phase and a joint phase never implicitly bound each other — only an explicit endAge does", () => {
+    const jointStepHousehold: Household = {
+      people: [stepPerson, { id: PERSON_B_ID, dateOfBirth: "1961-01-01", targetRetirementAge: 65, projectionEndAge: 95 }],
+      relationshipStatus: null,
+      targetIncomeMode: "perPerson",
+    };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: jointStepHousehold,
+      accounts: [bigPension, { ...bigPension, id: "pension2", owner: PERSON_B_ID }],
+      incomeSources: [
+        { id: "individual", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(80000), startAge: 65 } },
+        { id: "joint", type: "targetDrawdownIncome", owner: "joint", config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 67 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 3);
+    // 2028, age 67 — the individual phase is still active (never implicitly
+    // capped by the differently-owned joint phase), on top of the joint
+    // one. Summed across both people rather than asserted per-person,
+    // since exactly how the joint £50,000 itself splits between them is
+    // the household drawdown optimiser's own concern, not this test's.
+    const totalAchieved = sumPence((result.rows[2]?.perPerson ?? []).map((p) => p.drawdownNetAchieved));
+    expect(totalAchieved).toBe(poundsToPence(130000));
+  });
+});

@@ -97,6 +97,25 @@ function validate(config: Readonly<TargetDrawdownIncomeConfig>): readonly Valida
 }
 
 /**
+ * The next same-owner target phase's own `startAge` (the smallest one
+ * strictly after `startAge`), if any exists — a phase with no `endAge`
+ * of its own picks this up as where it implicitly stops, so "£80,000
+ * from 55, then £50,000 from 70" needs only the second phase's start
+ * age stated once, rather than also requiring the first phase to
+ * separately repeat it as its own end age. Scoped to instances sharing
+ * the exact same `owner` — a joint phase and an individual phase never
+ * implicitly bound each other this way, only an explicit `endAge` does
+ * that (SPEC.md §5.7.1).
+ */
+function nextPhaseStartAge(state: ScenarioState, owner: Owner, startAge: number): number | undefined {
+  const laterStartAges = state.scenario.incomeSources
+    .filter((s) => s.type === "targetDrawdownIncome" && s.owner === owner)
+    .map((s) => (s.config as TargetDrawdownIncomeConfig).startAge)
+    .filter((otherStartAge) => otherStartAge > startAge);
+  return laterStartAges.length > 0 ? Math.min(...laterStartAges) : undefined;
+}
+
+/**
  * For a joint target, start/end age is gated on the *first* household
  * member's age (`household.people[0]`) — a documented v1 convention
  * (SPEC.md §5.7.4 doesn't specify one), rather than requiring both
@@ -111,7 +130,8 @@ function isActive(config: Readonly<TargetDrawdownIncomeConfig>, state: ScenarioS
   if (age < config.startAge) {
     return false;
   }
-  return config.endAge === undefined || age < config.endAge;
+  const effectiveEndAge = config.endAge ?? nextPhaseStartAge(state, owner, config.startAge);
+  return effectiveEndAge === undefined || age < effectiveEndAge;
 }
 
 /**

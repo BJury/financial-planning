@@ -1,4 +1,5 @@
 import {
+  ageAtYear,
   subtractPence,
   sumPence,
   totalTaxForYear,
@@ -8,6 +9,7 @@ import {
   type PersonYearResult,
   type Scenario,
   type TargetDrawdownIncomeConfig,
+  type YearLedgerRow,
 } from "@fp/engine";
 import { Alert, Button, Card, Group, Select, Stack, Table, Text, Title } from "@mantine/core";
 import { useMemo, useState, type ReactNode } from "react";
@@ -34,13 +36,26 @@ const STRATEGY_LABELS: Record<HouseholdDrawdownSplitStrategy, string> = {
  * genuine extra computation (not just reading a different field), but
  * the engine's performance target (SPEC.md §9.7) makes this cheap enough
  * for an on-demand page view.
+ *
+ * There can be more than one joint `targetDrawdownIncome` instance now
+ * (step phases, e.g. a higher target before State Pension age and a
+ * lower one after) — picks whichever one is actually active in the
+ * selected year, gated on the first household member's age, the same
+ * documented v1 convention the type's own `isActive` already uses
+ * (SPEC.md §5.7.4), rather than always grabbing the first instance found
+ * regardless of whether it's the one actually in effect that year.
  */
-function useHouseholdDrawdownComparison(scenario: Scenario | null, taxYear: string | undefined) {
+function useHouseholdDrawdownComparison(scenario: Scenario | null, row: YearLedgerRow | undefined) {
   return useMemo(() => {
-    if (!scenario || !taxYear) return null;
-    const jointDrawdownSource = scenario.incomeSources.find(
-      (s): s is IncomeSourceInstance<TargetDrawdownIncomeConfig> => s.type === "targetDrawdownIncome" && s.owner === "joint",
-    );
+    if (!scenario || !row) return null;
+    const firstPerson = scenario.household.people[0];
+    if (!firstPerson) return null;
+    const age = ageAtYear(firstPerson.dateOfBirth, row.calendarYear);
+    const jointDrawdownSource = scenario.incomeSources.find((s): s is IncomeSourceInstance<TargetDrawdownIncomeConfig> => {
+      if (s.type !== "targetDrawdownIncome" || s.owner !== "joint") return false;
+      const config = s.config as TargetDrawdownIncomeConfig;
+      return age >= config.startAge && (config.endAge === undefined || age < config.endAge);
+    });
     if (!jointDrawdownSource) return null;
     const currentStrategy = jointDrawdownSource.config.householdSplitStrategy ?? "optimised";
 
@@ -51,14 +66,14 @@ function useHouseholdDrawdownComparison(scenario: Scenario | null, taxYear: stri
           s.id === jointDrawdownSource.id ? { ...s, config: { ...jointDrawdownSource.config, householdSplitStrategy: strategy } } : s,
         ),
       };
-      const row = computeProjection(scenarioWithStrategy).rows.find((r) => r.taxYear === taxYear);
-      return row ? totalTaxForYear(row) : (0 as Pence);
+      const recomputedRow = computeProjection(scenarioWithStrategy).rows.find((r) => r.taxYear === row.taxYear);
+      return recomputedRow ? totalTaxForYear(recomputedRow) : (0 as Pence);
     };
 
     const currentTax = totalTaxWithStrategy(currentStrategy);
     const evenTax = currentStrategy === "even" ? currentTax : totalTaxWithStrategy("even");
     return { currentStrategy, currentTax, evenTax, saving: subtractPence(evenTax, currentTax) };
-  }, [scenario, taxYear]);
+  }, [scenario, row]);
 }
 
 const BAND_LABELS: Record<string, string> = {
@@ -97,7 +112,7 @@ export function TaxBreakdown() {
 
   const rows = result?.rows ?? [];
   const row = rows.find((r) => r.taxYear === selectedTaxYear) ?? rows[0];
-  const drawdownComparison = useHouseholdDrawdownComparison(scenario, row?.taxYear);
+  const drawdownComparison = useHouseholdDrawdownComparison(scenario, row);
 
   if (!scenario) {
     return <Navigate to="/" replace />;

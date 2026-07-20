@@ -22,6 +22,7 @@ import {
   type PersonId,
   type Property,
   type Scenario,
+  type TargetDrawdownIncomeConfig,
 } from "@fp/engine";
 import { ActionIcon, AppShell, Burger, Button, Card, Group, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
@@ -175,6 +176,44 @@ function createDefaultDrawdownTarget(): IncomeSourceInstance {
   return { id: generateId("drawdown-target"), type: "targetDrawdownIncome", owner: PERSON_ID, config };
 }
 
+/**
+ * A further step up/down at a given age — e.g. "£80,000 from 55, then
+ * £50,000 from 70" is two `targetDrawdownIncome` instances; the second
+ * one's own start age is what actually matters (the engine picks it up
+ * automatically as the first phase's implicit end, `targetDrawdownIncome.ts`'s
+ * `nextPhaseStartAge`), so the first phase needs no `endAge` of its own
+ * at all. Only pre-fills the new phase's own `startAge` when the previous
+ * phase already has an explicit `endAge` to pick up from — copying the
+ * previous phase's own *start* age instead, when it doesn't, would default
+ * two phases straight into an immediate overlap, so it's left blank
+ * instead, same as any other not-yet-filled-in required field. Owner and
+ * split strategy carry over from the previous phase either way, since a
+ * step is almost always for the same person(s).
+ */
+function createNextDrawdownTargetPhase(previous: IncomeSourceInstance): IncomeSourceInstance {
+  const definition = registry.getIncomeSource("targetDrawdownIncome");
+  const config = createDefaultConfig(definition.fields);
+  const previousConfig = previous.config as TargetDrawdownIncomeConfig;
+  if (previousConfig.endAge !== undefined) {
+    config.startAge = previousConfig.endAge;
+  }
+  config.householdSplitStrategy = previousConfig.householdSplitStrategy;
+  return { id: generateId("drawdown-target"), type: "targetDrawdownIncome", owner: previous.owner, config };
+}
+
+/**
+ * The chronologically last phase (highest `startAge`) — not necessarily
+ * the last one in array order, since phases can end up out of creation
+ * order once their ages are edited (`DrawdownTargetsSection` always
+ * displays and labels them by age, not creation order). Used to seed a
+ * freshly-added phase's own default `startAge`.
+ */
+function latestDrawdownTargetPhase(targets: readonly IncomeSourceInstance[]): IncomeSourceInstance | undefined {
+  return [...targets].sort(
+    (a, b) => (a.config as TargetDrawdownIncomeConfig).startAge - (b.config as TargetDrawdownIncomeConfig).startAge,
+  )[targets.length - 1];
+}
+
 interface OnboardingDrafts {
   readonly dateOfBirth: string;
   readonly statePensionAge: number;
@@ -191,8 +230,8 @@ interface OnboardingDrafts {
   readonly giaAccounts: readonly GiaAccountDraft[];
   readonly cashAccounts: readonly CashAccountDraft[];
   readonly properties: readonly PropertyAccountDraft[];
-  /** Always exactly one — see `createDefaultDrawdownTarget`. */
-  readonly drawdownTarget: IncomeSourceInstance;
+  /** Always at least one — see `createDefaultDrawdownTarget`. Additional entries are further step up/down phases (`createNextDrawdownTargetPhase`), ordered by `config.startAge`. */
+  readonly drawdownTargets: readonly IncomeSourceInstance[];
   readonly incomeSources: readonly IncomeSourceInstance[];
   readonly incomeDrains: readonly IncomeDrainInstance[];
 }
@@ -222,19 +261,19 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       giaAccounts: [],
       cashAccounts: [],
       properties: [],
-      drawdownTarget: createDefaultDrawdownTarget(),
+      drawdownTargets: [createDefaultDrawdownTarget()],
       incomeSources: [],
       incomeDrains: [],
     };
   }
 
   const [personA, personB] = scenario.household.people;
-  // If a loaded plan somehow has more than one (e.g. hand-edited, or from
-  // before this became a single permanent input), only the first is kept
-  // as "the" managed target — a deliberate v1 simplification rather than
-  // building UI for multiple targets, matching this section's own "always
-  // exactly one" design.
-  const existingDrawdownTarget = scenario.incomeSources.find((s) => s.type === "targetDrawdownIncome");
+  // Every targetDrawdownIncome instance is a step phase (SPEC.md §5.7.1)
+  // — ordered by start age so phase 1 always renders first, regardless
+  // of the order they happen to appear in the saved file.
+  const existingDrawdownTargets = scenario.incomeSources
+    .filter((s): s is IncomeSourceInstance<TargetDrawdownIncomeConfig> => s.type === "targetDrawdownIncome")
+    .sort((a, b) => a.config.startAge - b.config.startAge);
 
   return {
     dateOfBirth: personA?.dateOfBirth ?? "",
@@ -298,7 +337,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
         sellingCosts: a.plannedSale ? penceToPounds(a.plannedSale.sellingCosts) : 0,
         destinationAccountId: a.plannedSale?.destinationAccountId,
       })),
-    drawdownTarget: existingDrawdownTarget ?? createDefaultDrawdownTarget(),
+    drawdownTargets: existingDrawdownTargets.length > 0 ? existingDrawdownTargets : [createDefaultDrawdownTarget()],
     incomeSources: scenario.incomeSources.filter((s) => s.type !== "targetDrawdownIncome"),
     incomeDrains: scenario.incomeDrains,
   };
@@ -340,7 +379,7 @@ export function Onboarding() {
   const [giaAccounts, setGiaAccounts] = useState<GiaAccountDraft[]>([...initial.giaAccounts]);
   const [cashAccounts, setCashAccounts] = useState<CashAccountDraft[]>([...initial.cashAccounts]);
   const [properties, setProperties] = useState<PropertyAccountDraft[]>([...initial.properties]);
-  const [drawdownTarget, setDrawdownTarget] = useState<IncomeSourceInstance>(initial.drawdownTarget);
+  const [drawdownTargets, setDrawdownTargets] = useState<IncomeSourceInstance[]>([...initial.drawdownTargets]);
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
 
@@ -488,7 +527,7 @@ export function Onboarding() {
       schemaVersion: 1,
       household,
       accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities, ...propertyEntities],
-      incomeSources: [drawdownTarget, ...incomeSources],
+      incomeSources: [...drawdownTargets, ...incomeSources],
       incomeDrains,
       inflationRate,
       upratingPolicy: { kind: "inflationLinked" },
@@ -520,7 +559,7 @@ export function Onboarding() {
       giaAccounts,
       cashAccounts,
       properties,
-      drawdownTarget,
+      drawdownTargets,
       incomeSources,
       incomeDrains,
     ],
@@ -591,13 +630,13 @@ export function Onboarding() {
           onChange={(e) => {
             const checked = e.currentTarget.checked;
             setHasSecondPerson(checked);
-            // The target's owner selector is only shown once a second
-            // person exists, so it can only still be at its single-person
-            // default ("Me") right as one gets added — safe to promote to
-            // "Joint" here so a partner's income is netted against it
-            // without the user needing to discover the owner selector.
-            if (checked && drawdownTarget.owner === PERSON_ID) {
-              setDrawdownTarget({ ...drawdownTarget, owner: "joint" });
+            // Each target phase's owner selector is only shown once a
+            // second person exists, so any phase still at its single-
+            // person default ("Me") right as one gets added is safe to
+            // promote to "Joint" — a phase the user already pointed at a
+            // specific person on purpose is left alone.
+            if (checked) {
+              setDrawdownTargets((prev) => prev.map((t) => (t.owner === PERSON_ID ? { ...t, owner: "joint" } : t)));
             }
           }}
         />
@@ -678,15 +717,19 @@ export function Onboarding() {
         />
       </Stack>
 
-      <DrawdownTargetSection
-        instance={drawdownTarget}
+      <DrawdownTargetsSection
+        instances={drawdownTargets}
         pensionAccounts={pensionAccounts}
         isaAccounts={isaAccounts}
         giaAccounts={giaAccounts}
         cashAccounts={cashAccounts}
         hasSecondPerson={hasSecondPerson}
         inflationRate={inflationRate}
-        onChange={setDrawdownTarget}
+        onChange={(updated) => setDrawdownTargets((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))}
+        onAddPhase={() =>
+          setDrawdownTargets((prev) => [...prev, createNextDrawdownTargetPhase(latestDrawdownTargetPhase(prev) ?? createDefaultDrawdownTarget())])
+        }
+        onRemovePhase={(id) => setDrawdownTargets((prev) => prev.filter((t) => t.id !== id))}
       />
 
       <Stack gap="sm">
@@ -976,14 +1019,17 @@ function OwnerSelect({ owner, allowJoint, onChange }: { readonly owner: Owner; r
  * this number actually be sustained." Given its own permanent section
  * above Accounts, rather than being one option among many in the
  * generic "+ Add income source" picker where it previously read as an
- * optional extra. There is always exactly one instance (never added or
- * removed here, unlike every other catalog-backed section on this
- * page) — still the same `targetDrawdownIncome` catalog type/engine
- * mechanics underneath (SPEC.md §9.4), spliced back into
- * `Scenario.incomeSources` in `buildScenario`.
+ * optional extra. There is always at least one instance — but, unlike
+ * that v1 restriction, more can be added: each one is its own
+ * `targetDrawdownIncome` catalog instance/age range (SPEC.md §9.4),
+ * spliced back into `Scenario.incomeSources` in `buildScenario`, so
+ * "£80,000 from 55 to 70, then £50,000 from then on" is just two
+ * instances with adjoining `startAge`/`endAge` — the engine already
+ * sums every instance active for a person in a given year (it was
+ * simply never possible to create more than one from this page before).
  */
-function DrawdownTargetSection({
-  instance,
+function DrawdownTargetsSection({
+  instances,
   pensionAccounts,
   isaAccounts,
   giaAccounts,
@@ -991,8 +1037,10 @@ function DrawdownTargetSection({
   hasSecondPerson,
   inflationRate,
   onChange,
+  onAddPhase,
+  onRemovePhase,
 }: {
-  readonly instance: IncomeSourceInstance;
+  readonly instances: readonly IncomeSourceInstance[];
   readonly pensionAccounts: readonly PensionAccountDraft[];
   readonly isaAccounts: readonly IsaAccountDraft[];
   readonly giaAccounts: readonly GiaAccountDraft[];
@@ -1000,6 +1048,128 @@ function DrawdownTargetSection({
   readonly hasSecondPerson: boolean;
   readonly inflationRate: number;
   readonly onChange: (instance: IncomeSourceInstance) => void;
+  readonly onAddPhase: () => void;
+  readonly onRemovePhase: (id: string) => void;
+}) {
+  const hasAnyAccount = pensionAccounts.length > 0 || isaAccounts.length > 0 || giaAccounts.length > 0 || cashAccounts.length > 0;
+  const hasMultiplePhases = instances.length > 1;
+  // Always shown in chronological order, by start age, not creation
+  // order — a freshly-added phase starts out later than every existing
+  // one (its own default start age is the previous phase's end age), but
+  // if the user then edits ages so two phases swap places, "Phase 1"/
+  // "Phase 2" need to keep tracking which one the engine actually applies
+  // first, not which one happened to be added first.
+  const sortedInstances = useMemo(
+    () => [...instances].sort((a, b) => (a.config as TargetDrawdownIncomeConfig).startAge - (b.config as TargetDrawdownIncomeConfig).startAge),
+    [instances],
+  );
+
+  // Mirrors the engine's own `nextPhaseStartAge` (targetDrawdownIncome.ts)
+  // exactly: a phase with no explicit `endAge` of its own implicitly ends
+  // at the next same-owner phase's start age, so two adjacent phases for
+  // the same person/owner with both end ages left blank are correctly
+  // *not* an overlap — this only resolves to `Infinity` (open-ended) for
+  // a differently-owned phase (e.g. a Joint phase never implicitly bounds
+  // an individual one) or a genuinely last phase.
+  const effectiveEndAge = (instance: IncomeSourceInstance, all: readonly IncomeSourceInstance[]): number => {
+    const config = instance.config as TargetDrawdownIncomeConfig;
+    if (config.endAge !== undefined) return config.endAge;
+    const laterSameOwnerStartAges = all
+      .filter((t) => t.id !== instance.id && t.owner === instance.owner)
+      .map((t) => (t.config as TargetDrawdownIncomeConfig).startAge)
+      .filter((startAge) => startAge > config.startAge);
+    return laterSameOwnerStartAges.length > 0 ? Math.min(...laterSameOwnerStartAges) : Infinity;
+  };
+
+  // Two overlapping phases add together rather than one replacing the
+  // other (the engine sums every active instance, SPEC.md §5.7.1) — with
+  // the implicit next-phase end above, this can now only happen for a
+  // phase whose own explicit `endAge` deliberately overruns the next
+  // one's start, or between differently-owned phases (a Joint phase and
+  // an individual one never implicitly bound each other). Flagged here
+  // since there's no other validation surface on this page that would
+  // catch it.
+  const overlapWarning = useMemo(() => {
+    for (let i = 0; i < instances.length; i++) {
+      const a = instances[i];
+      if (!a) continue;
+      const aConfig = a.config as TargetDrawdownIncomeConfig;
+      const aEnd = effectiveEndAge(a, instances);
+      for (let j = i + 1; j < instances.length; j++) {
+        const b = instances[j];
+        if (!b) continue;
+        if (a.owner !== b.owner && a.owner !== "joint" && b.owner !== "joint") continue;
+        const bConfig = b.config as TargetDrawdownIncomeConfig;
+        const bEnd = effectiveEndAge(b, instances);
+        const overlaps = aConfig.startAge < bEnd && bConfig.startAge < aEnd;
+        if (overlaps) return true;
+      }
+    }
+    return false;
+  }, [instances]);
+
+  return (
+    <Stack gap="sm">
+      <Group gap={4}>
+        <Title order={4}>Retirement income target</Title>
+        <InfoTip>
+          Your total desired income each year, from every source combined — salary, State Pension, rental profit,
+          and drawdown. Automatic income counts toward it first; the engine only draws down whatever gap is left. For
+          example, £30,000 salary with a £50,000 target means £20,000 drawn from savings. Reaching this figure counts
+          as spent, so you don&rsquo;t need to separately add Living Expenses unless your actual spending genuinely
+          differs from it.
+        </InfoTip>
+      </Group>
+      <Text size="sm" c="dimmed">
+        Your total desired income each year, from every source combined. Add another phase for a step up or down at
+        a given age — e.g. £80,000 from 55, then £50,000 from 70. Leave a phase&rsquo;s end age blank and it runs
+        until the next phase you&rsquo;ve added for the same person starts.
+      </Text>
+      {!hasAnyAccount && (
+        <Text size="sm" c="orange.7">
+          Add an account below for this to actually have something to draw from.
+        </Text>
+      )}
+      {overlapWarning && (
+        <Text size="sm" c="orange.7">
+          Two phases overlap — their targets will add together in the overlapping years, not replace each other.
+          Check their start/end ages (phases for different owners, including a Joint phase, don&rsquo;t
+          automatically step between each other).
+        </Text>
+      )}
+      {sortedInstances.map((instance, index) => (
+        <DrawdownTargetPhaseCard
+          key={instance.id}
+          instance={instance}
+          phaseLabel={hasMultiplePhases ? `Phase ${index + 1}` : undefined}
+          hasSecondPerson={hasSecondPerson}
+          inflationRate={inflationRate}
+          onChange={onChange}
+          {...(hasMultiplePhases ? { onRemove: () => onRemovePhase(instance.id) } : {})}
+        />
+      ))}
+      <Button variant="light" onClick={onAddPhase}>
+        + Add another phase
+      </Button>
+    </Stack>
+  );
+}
+
+function DrawdownTargetPhaseCard({
+  instance,
+  phaseLabel,
+  hasSecondPerson,
+  inflationRate,
+  onChange,
+  onRemove,
+}: {
+  readonly instance: IncomeSourceInstance;
+  /** Only set once a second phase exists — a single phase renders exactly as this section always used to, with no extra chrome. */
+  readonly phaseLabel: string | undefined;
+  readonly hasSecondPerson: boolean;
+  readonly inflationRate: number;
+  readonly onChange: (instance: IncomeSourceInstance) => void;
+  readonly onRemove?: () => void;
 }) {
   const definition = registry.getIncomeSource("targetDrawdownIncome");
   const isJoint = instance.owner === "joint";
@@ -1023,32 +1193,12 @@ function DrawdownTargetSection({
   });
   const preferenceField = definition.fields.find((field) => field.key === "taxableDrawdownPreference");
 
-  const hasAnyAccount = pensionAccounts.length > 0 || isaAccounts.length > 0 || giaAccounts.length > 0 || cashAccounts.length > 0;
-
-  return (
+  const body = (
     <Stack gap="sm">
-      <Group gap={4}>
-        <Title order={4}>Retirement income target</Title>
-        <InfoTip>
-          Your total desired income each year, from every source combined — salary, State Pension, rental profit,
-          and drawdown. Automatic income counts toward it first; the engine only draws down whatever gap is left. For
-          example, £30,000 salary with a £50,000 target means £20,000 drawn from savings. Reaching this figure counts
-          as spent, so you don&rsquo;t need to separately add Living Expenses unless your actual spending genuinely
-          differs from it.
-        </InfoTip>
-      </Group>
-      <Text size="sm" c="dimmed">
-        Your total desired income each year, from every source combined.
-      </Text>
       {hasSecondPerson && <OwnerSelect owner={instance.owner} allowJoint onChange={(owner) => onChange({ ...instance, owner })} />}
       {isJoint && (
         <Text size="xs" c="dimmed">
           Draws from each of your own accounts automatically, split for the lowest combined tax.
-        </Text>
-      )}
-      {!hasAnyAccount && (
-        <Text size="sm" c="orange.7">
-          Add an account below for this to actually have something to draw from.
         </Text>
       )}
       <CatalogItemForm
@@ -1084,6 +1234,22 @@ function DrawdownTargetSection({
         </Card>
       )}
     </Stack>
+  );
+
+  if (!phaseLabel) return body;
+
+  return (
+    <Card withBorder padding="sm">
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>{phaseLabel}</Text>
+        {onRemove && (
+          <ActionIcon variant="subtle" color="red" onClick={onRemove} aria-label={`Remove ${phaseLabel}`}>
+            ✕
+          </ActionIcon>
+        )}
+      </Group>
+      {body}
+    </Card>
   );
 }
 
