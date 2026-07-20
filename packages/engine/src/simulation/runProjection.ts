@@ -66,6 +66,7 @@ import type { CashContributionConfig } from "../catalog/incomeDrains/cashContrib
 import type { TargetDrawdownIncomeConfig } from "../catalog/incomeSources/targetDrawdownIncome.js";
 import type { RentalIncomeConfig } from "../catalog/incomeSources/rentalIncome.js";
 import type { OneOffInflowConfig } from "../catalog/incomeSources/oneOffInflow.js";
+import type { GeneralCashIncomeConfig } from "../catalog/incomeSources/generalCashIncome.js";
 import { DEFAULT_STATE_PENSION_AGE } from "../schema/types.js";
 import type { CashAccount, GiaAccount, IsaAccount, Owner, Person, PersonId, Property, Scenario } from "../schema/types.js";
 import type { TaxYearRuleSet } from "../taxYearData/types.js";
@@ -493,6 +494,56 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       }
     }
 
+    // General cash income — same "credit an account once per instance,
+    // before any per-person split" shape as the one-off inflow pre-pass
+    // just above, but the destination is *required* rather than
+    // optional (`GeneralCashIncomeConfig.destinationAccountId`) and adds
+    // a pension account as a fourth possible kind, on top of ISA/GIA/
+    // cash. An ISA destination shares the same per-person subscription
+    // pool tracked above (whichever mechanism runs first this year
+    // claims room first); GIA, cash, and pension destinations have no
+    // cap. A pension destination is credited at face value — no
+    // relief-at-source uplift, no Annual Allowance impact — since this
+    // is already-owned tax-free money being invested, not a new pension
+    // contribution.
+    const generalCashIncomeLeftoverBySourceId = new Map<string, Pence>();
+    for (const source of scenario.incomeSources) {
+      if (source.type !== "generalCashIncome") continue;
+      const config = source.config as GeneralCashIncomeConfig;
+      if (!isWithinActiveDateRange(source.startDate, source.endDate, yearContext.calendarYear)) continue;
+      const definition = registry.getIncomeSource("generalCashIncome");
+      if (!definition.isActive(config, state, yearContext, source.owner)) continue;
+
+      const destinationAccount = scenario.accounts.find((a) => a.id === config.destinationAccountId);
+      if (!destinationAccount) continue;
+
+      if (destinationAccount.kind === "isa") {
+        const alreadyUsed = isaSubscriptionUsedByPersonId.get(destinationAccount.owner) ?? zeroPence();
+        const roomRemaining = maxPence(subtractPence(prepared.isa.annualSubscriptionLimit, alreadyUsed), zeroPence());
+        const credited = minPence(config.amount, roomRemaining);
+        if (credited > 0) {
+          const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+          nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, credited));
+          isaSubscriptionUsedByPersonId.set(destinationAccount.owner, addPence(alreadyUsed, credited));
+        }
+        generalCashIncomeLeftoverBySourceId.set(source.id, subtractPence(config.amount, credited));
+      } else if (destinationAccount.kind === "gia") {
+        const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+        nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, config.amount));
+        const currentCostBasis = nextCostBasisByAccountId.get(destinationAccount.id) ?? zeroPence();
+        nextCostBasisByAccountId.set(destinationAccount.id, addPence(currentCostBasis, config.amount));
+        generalCashIncomeLeftoverBySourceId.set(source.id, zeroPence());
+      } else if (destinationAccount.kind === "cash") {
+        const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+        nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, config.amount));
+        generalCashIncomeLeftoverBySourceId.set(source.id, zeroPence());
+      } else if (destinationAccount.kind === "pension") {
+        const currentBalance = nextAccountBalances.get(destinationAccount.id) ?? zeroPence();
+        nextAccountBalances.set(destinationAccount.id, addPence(currentBalance, config.amount));
+        generalCashIncomeLeftoverBySourceId.set(source.id, zeroPence());
+      }
+    }
+
     // Splits against `alivePeople`, not the Scenario's full static list —
     // once one joint owner has died, a joint amount attributes entirely
     // to the survivor (`splitByOwnership`'s own single-person fallback,
@@ -527,11 +578,16 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         if (!definition.isActive(config, state, yearContext, source.owner)) continue;
         const result = definition.calculateForYear(config, state, yearContext, source.owner);
         if (result.kind !== "simple") continue;
-        // A one-off inflow directed at an ISA/GIA (see the household
-        // pre-pass above) already had some or all of it credited
-        // directly — only the leftover still counts as spendable income.
+        // A one-off inflow or general cash income directed at an
+        // ISA/GIA/cash/pension (see the household pre-passes above)
+        // already had some or all of it credited directly — only the
+        // leftover still counts as spendable income.
         const effectiveResultAmount =
-          source.type === "oneOffInflow" ? (oneOffInflowLeftoverBySourceId.get(source.id) ?? result.amount) : result.amount;
+          source.type === "oneOffInflow"
+            ? (oneOffInflowLeftoverBySourceId.get(source.id) ?? result.amount)
+            : source.type === "generalCashIncome"
+              ? (generalCashIncomeLeftoverBySourceId.get(source.id) ?? result.amount)
+              : result.amount;
         const amount = ownershipShareFor(effectiveResultAmount, source.owner, person.id);
         if (result.taxCategory === "earnedIncome") {
           grossIncome = addPence(grossIncome, amount);

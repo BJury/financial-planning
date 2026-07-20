@@ -1614,16 +1614,22 @@ function CatalogInstanceCard({
         return { ...field, options: options.map((a) => ({ value: a.id, label: `${a.propertyType === "rental" ? "Rental" : "Main residence"} (£${a.currentBalance.toLocaleString()})` })) };
       }
       if (field.key === "destinationAccountId") {
-        // A one-off inflow's optional ISA/GIA/cash destination — one
-        // combined picker rather than separate account-id fields, since
-        // it's a single either/or choice (SPEC.md §3.9), unlike a
-        // drawdown target's several independent account links.
+        // A one-off inflow's optional (or general cash income's
+        // required) ISA/GIA/cash destination — one combined picker
+        // rather than separate account-id fields, since it's a single
+        // either/or choice (SPEC.md §3.9), unlike a drawdown target's
+        // several independent account links. General cash income also
+        // offers a SIPP destination, which a one-off inflow doesn't
+        // support crediting into (see runProjection.ts's pre-pass).
         return {
           ...field,
           options: [
             ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })),
             ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })),
             ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })),
+            ...(instance.type === "generalCashIncome"
+              ? pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${a.currentBalance.toLocaleString()})` }))
+              : []),
           ],
         };
       }
@@ -1636,6 +1642,16 @@ function CatalogInstanceCard({
   const needsCashAccount = fields.some((f) => f.key === "cashAccountId") && cashAccounts.length === 0;
   const needsPropertyAccount =
     fields.some((f) => f.key === "propertyId") && (instance.type === "rentalIncome" ? rentalProperties.length === 0 : properties.length === 0);
+  // General cash income's destination is required (unlike a one-off
+  // inflow's optional one) — with no account of any eligible kind yet,
+  // the picker below would just show empty and required, so flag it the
+  // same way the single-purpose account fields above already do.
+  const needsDestinationAccount =
+    instance.type === "generalCashIncome" &&
+    isaAccounts.length === 0 &&
+    giaAccounts.length === 0 &&
+    cashAccounts.length === 0 &&
+    pensionAccounts.length === 0;
 
   // Generic scheduling (SPEC.md §3.11) — separate from the type's own
   // config, since not every income/outgoing is tied to a person's age
@@ -1681,6 +1697,11 @@ function CatalogInstanceCard({
       {needsPropertyAccount && (
         <Text size="sm" c="orange.7" mb="xs">
           Add a {instance.type === "rentalIncome" ? "rental " : ""}property account above first.
+        </Text>
+      )}
+      {needsDestinationAccount && (
+        <Text size="sm" c="orange.7" mb="xs">
+          Add a cash, ISA, GIA, or pension account above first.
         </Text>
       )}
       {hasSecondPerson && (

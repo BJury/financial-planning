@@ -114,6 +114,8 @@ export type { MortgagePaymentConfig } from "./catalog/incomeDrains/mortgagePayme
 import "./catalog/incomeDrains/mortgagePayment.js";
 export type { StatePensionConfig } from "./catalog/incomeSources/statePension.js";
 import "./catalog/incomeSources/statePension.js";
+export type { GeneralCashIncomeConfig } from "./catalog/incomeSources/generalCashIncome.js";
+import "./catalog/incomeSources/generalCashIncome.js";
 
 // Drawdown solver (SPEC.md §5.7)
 export { solveDrawdown, type DrawdownSolverInputs, type DrawdownSolverResult } from "./drawdown/solveDrawdown.js";

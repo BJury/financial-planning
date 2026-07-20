@@ -13,6 +13,7 @@ import { runProjection, totalTaxForYear } from "./runProjection.js";
 import "../catalog/incomeSources/salary.js";
 import "../catalog/incomeSources/targetDrawdownIncome.js";
 import "../catalog/incomeSources/oneOffInflow.js";
+import "../catalog/incomeSources/generalCashIncome.js";
 import "../catalog/incomeSources/rentalIncome.js";
 import "../catalog/incomeSources/statePension.js";
 import "../catalog/incomeDrains/pensionContribution.js";
@@ -3285,5 +3286,114 @@ describe("runProjection — one-off inflow with a chosen ISA/GIA destination (SP
     expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(5000));
     expect(personResult?.surplusSweptToIsa).toBe(poundsToPence(5000));
     expect(personResult?.surplusSweptToGia).toBe(poundsToPence(5000));
+  });
+});
+
+describe("runProjection — general cash income with a required cash/GIA/ISA/SIPP destination (SPEC.md §3.9)", () => {
+  const destinationPerson: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
+  const destinationHousehold: Household = { people: [destinationPerson], relationshipStatus: null, targetIncomeMode: "perPerson" };
+
+  it("credits the full amount directly into a chosen cash account every active year, tax-free", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: destinationHousehold,
+      accounts: [{ kind: "cash", id: "cash1", owner: PERSON_ID, currentBalance: zeroPence(), annualGrowthRate: 0 }],
+      incomeSources: [
+        { id: "income1", type: "generalCashIncome", owner: PERSON_ID, config: { amount: poundsToPence(6000), destinationAccountId: "cash1" } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 2);
+    expect(result.rows[0]?.accountBalances.get("cash1")).toBe(poundsToPence(6000));
+    expect(result.rows[1]?.accountBalances.get("cash1")).toBe(poundsToPence(12000));
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
+    expect(result.rows[0]?.perPerson[0]?.incomeTax).toBe(0);
+  });
+
+  it("credits the full amount directly into a chosen GIA, increasing cost basis too", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: destinationHousehold,
+      accounts: [{ kind: "gia", id: "gia1", owner: PERSON_ID, currentBalance: zeroPence(), costBasis: zeroPence(), annualGrowthRate: 0, annualDividendYield: 0 }],
+      incomeSources: [
+        { id: "income1", type: "generalCashIncome", owner: PERSON_ID, config: { amount: poundsToPence(4000), destinationAccountId: "gia1" } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(4000));
+    expect(result.rows[0]?.costBasisByAccountId.get("gia1")).toBe(poundsToPence(4000));
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
+  });
+
+  it("credits the full amount directly into a chosen SIPP, with no Annual Allowance impact", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: destinationHousehold,
+      accounts: [
+        { kind: "pension", id: "pension1", owner: PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(50000), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: pence(0) },
+      ],
+      incomeSources: [
+        { id: "income1", type: "generalCashIncome", owner: PERSON_ID, config: { amount: poundsToPence(3000), destinationAccountId: "pension1" } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(53000));
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
+    expect(result.rows[0]?.perPerson[0]?.annualAllowanceCharge).toBe(0);
+  });
+
+  it("caps an ISA-destined general cash income at the annual subscription limit each year — the excess becomes ordinary spendable income, not lost", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: destinationHousehold,
+      accounts: [{ kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: zeroPence(), annualGrowthRate: 0 }],
+      incomeSources: [
+        { id: "income1", type: "generalCashIncome", owner: PERSON_ID, config: { amount: poundsToPence(25000), destinationAccountId: "isa1" } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 1);
+    // Capped at the 2026-27 £20,000 ISA allowance, not the full £25,000.
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(20000));
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(poundsToPence(5000));
+  });
+
+  it("respects the generic startDate/endDate scheduling — stops crediting once the instance has ended", () => {
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household: destinationHousehold,
+      accounts: [{ kind: "cash", id: "cash1", owner: PERSON_ID, currentBalance: zeroPence(), annualGrowthRate: 0 }],
+      incomeSources: [
+        {
+          id: "income1",
+          type: "generalCashIncome",
+          owner: PERSON_ID,
+          config: { amount: poundsToPence(1000), destinationAccountId: "cash1" },
+          startDate: "2026-01-01",
+          endDate: "2026-12-31",
+        },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+
+    const result = runProjection(scenario, ruleSet2026_27, 2);
+    expect(result.rows[0]?.accountBalances.get("cash1")).toBe(poundsToPence(1000));
+    expect(result.rows[1]?.accountBalances.get("cash1")).toBe(poundsToPence(1000));
   });
 });
