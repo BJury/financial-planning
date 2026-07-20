@@ -12,6 +12,7 @@ import {
 import { Alert, Button, Card, Group, Select, Stack, Table, Text, Title } from "@mantine/core";
 import { useMemo, useState, type ReactNode } from "react";
 import { Navigate, useNavigate } from "react-router";
+import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { InfoTip } from "../components/InfoTip.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
@@ -111,6 +112,7 @@ export function TaxBreakdown() {
           <Button variant="subtle" onClick={() => void navigate("/")}>
             Back to projection
           </Button>
+          <AboutDialog />
           <ColorSchemeToggle />
         </Group>
       </Group>

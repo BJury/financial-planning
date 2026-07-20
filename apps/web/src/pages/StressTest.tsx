@@ -2,6 +2,7 @@ import { ageAtYear, type Person, type ProjectionResult, type Scenario } from "@f
 import { Alert, Button, Group, NumberInput, Stack, Switch, Table, Text, Title } from "@mantine/core";
 import { useMemo, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
+import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
 import { computeProjection } from "../projection.js";
@@ -146,6 +147,7 @@ export function StressTest() {
           <Button variant="subtle" onClick={() => void navigate("/")}>
             Back to projection
           </Button>
+          <AboutDialog />
           <ColorSchemeToggle />
         </Group>
       </Group>

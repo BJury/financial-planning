@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
 import { CatalogPicker } from "../catalog-ui/CatalogPicker.js";
 import { AgeOrDateInput, isoDateFromAge } from "../components/AgeOrDateInput.js";
+import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { InfoTip } from "../components/InfoTip.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
@@ -547,6 +548,7 @@ export function Onboarding() {
           </Group>
           <Group gap="xs">
             <PlanFileControls />
+            <AboutDialog />
             <ColorSchemeToggle />
           </Group>
         </Group>
