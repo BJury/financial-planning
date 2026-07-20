@@ -13,7 +13,7 @@ import {
   type Scenario,
   type YearLedgerRow,
 } from "@fp/engine";
-import { Alert, Button, Center, Group, MultiSelect, Stack, Switch, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { Alert, Button, Center, Group, MultiSelect, Select, Stack, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -278,20 +278,38 @@ function ownerLabel(owner: Owner, people: readonly Person[]): string {
 }
 
 /**
- * Ages as of this row's calendar year, for whoever's still alive then —
- * built from `row.perPerson` (not the full `people` list directly) so a
- * deceased person (SPEC.md §5.7.5's survivorship) correctly drops out
- * the same year they stop appearing everywhere else in this row.
+ * What the year-by-year table's first column, and the chart's X-axis,
+ * are labelled with — a single either/or choice (not "tax year plus
+ * ages", the old toggle's behaviour) since showing every person's age
+ * side by side stops scaling once there's more than one, and a chart
+ * axis can only sensibly carry one series of tick values at a time.
  */
-function ageLabel(row: YearLedgerRow, people: readonly Person[]): string {
-  return row.perPerson
-    .flatMap((p) => {
-      const person = people.find((candidate) => candidate.id === p.personId);
-      if (!person) return [];
-      const age = ageAtYear(person.dateOfBirth, row.calendarYear);
-      return [people.length > 1 ? `${ownerLabel(person.id, people)} ${age}` : `${age}`];
-    })
-    .join(", ");
+type RowAxisMode = "taxYear" | "myAge" | "otherAge";
+
+function rowAxisModeOptions(people: readonly Person[]): readonly { readonly value: RowAxisMode; readonly label: string }[] {
+  return [
+    { value: "taxYear", label: "Tax year" },
+    { value: "myAge", label: people.length > 1 ? "My age" : "Age" },
+    ...(people.length > 1 ? [{ value: "otherAge" as const, label: "Their age" }] : []),
+  ];
+}
+
+/** Whichever person `"myAge"`/`"otherAge"` refers to — always `people[0]`/`people[1]` (SPEC.md §3.2's "Me"/"Them" ordering), regardless of whether that person is still alive in a given row; an axis needs a value for every row to stay continuous. */
+function personForRowAxisMode(axisMode: RowAxisMode, people: readonly Person[]): Person | undefined {
+  if (axisMode === "myAge") return people[0];
+  if (axisMode === "otherAge") return people[1];
+  return undefined;
+}
+
+function rowAxisColumnLabel(axisMode: RowAxisMode, people: readonly Person[]): string {
+  if (axisMode === "taxYear") return "Tax year";
+  if (axisMode === "myAge") return people.length > 1 ? "Your age" : "Age";
+  return "Their age";
+}
+
+function rowAxisLabel(row: YearLedgerRow, axisMode: RowAxisMode, people: readonly Person[]): string {
+  const person = personForRowAxisMode(axisMode, people);
+  return person ? String(ageAtYear(person.dateOfBirth, row.calendarYear)) : row.taxYear;
 }
 
 function accountBaseLabel(account: Account, people: readonly Person[]): string {
@@ -487,6 +505,33 @@ function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonl
 
   const { people } = scenario.household;
 
+  // Salary starting/stopping, per person. `grossIncome` is exclusively
+  // earned income (SPEC.md §3.2 — Salary is the only catalog type tagged
+  // `"earnedIncome"`), so a rising edge (0 to >0) marks a start and a
+  // falling edge (>0 back to 0, with more years still ahead in the
+  // projection) marks an end — the same "look at what the result actually
+  // did, not the configured schedule" reasoning as "Drawdown starts"
+  // above. Doesn't separate multiple overlapping Salary sources for the
+  // same person into their own pairs; a career-break gap between two
+  // Salary cards still shows its own start/end pair either way, since
+  // only the combined total per year matters here.
+  for (const person of people) {
+    let previouslyActive = false;
+    result.rows.forEach((row, index) => {
+      const active = row.perPerson.some((p) => p.personId === person.id && p.grossIncome > 0);
+      const suffix = people.length > 1 ? ` (${ownerLabel(person.id, people)})` : "";
+      if (active && !previouslyActive) {
+        events.push({ key: `salary-start:${person.id}:${row.taxYear}`, taxYear: row.taxYear, label: `Salary starts${suffix}`, color: "#2b8a3e" });
+      } else if (!active && previouslyActive) {
+        const endedRow = result.rows[index - 1];
+        if (endedRow) {
+          events.push({ key: `salary-end:${person.id}:${endedRow.taxYear}`, taxYear: endedRow.taxYear, label: `Salary ends${suffix}`, color: "#2b8a3e" });
+        }
+      }
+      previouslyActive = active;
+    });
+  }
+
   // Actual State Pension income only, not the configured State Pension
   // Age — matches the "Drawdown starts" reasoning above (a person can
   // reach State Pension Age with the amount already folded into other
@@ -582,9 +627,19 @@ function computeShortfallRanges(result: ProjectionResult): readonly ShortfallRan
  */
 export function ProjectionResults({ scenario }: { readonly scenario: Scenario | null }) {
   const navigate = useNavigate();
-  // A view preference, like `selectedMetrics` below — off by default so
-  // the table matches its existing look until asked for.
-  const [showAge, setShowAge] = useState(false);
+  // A view preference, like `selectedMetrics` below — starts on "Tax
+  // year" so the table and chart both match their existing look until
+  // asked for something else.
+  const [axisMode, setAxisMode] = useState<RowAxisMode>("taxYear");
+  // "Their age" only makes sense with a second person — if one existed
+  // when this was picked and was since removed (the "Plan for two
+  // people" switch is a real, reachable toggle), fall back rather than
+  // leaving the table/chart pointed at a person who's no longer there.
+  useEffect(() => {
+    if (axisMode === "otherAge" && (!scenario || scenario.household.people.length < 2)) {
+      setAxisMode("taxYear");
+    }
+  }, [axisMode, scenario]);
   // A view preference, not part of the financial plan — kept as local
   // component state rather than on the Scenario, and starts with just
   // "Net worth" selected so the chart looks the same as before this line
@@ -697,10 +752,19 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   const isDark = colorScheme === "dark";
   const chartTextColor = isDark ? "#C1C2C5" : "#495057";
   const chartGridColor = isDark ? "#373A40" : "#e9ecef";
+  const { people } = scenario.household;
+  const axisPerson = personForRowAxisMode(axisMode, people);
+  // "axisValue" carries whatever the X-axis is currently keyed on (the
+  // tax year string, or a person's age that year) — a separate field
+  // from `taxYear`, which stays around unconditionally so events and
+  // shortfall bands (both only ever known by tax year) can still be
+  // looked up and translated onto whichever axis is currently showing.
   const chartData = result.rows.map((row) => ({
     taxYear: row.taxYear,
+    axisValue: axisPerson ? ageAtYear(axisPerson.dateOfBirth, row.calendarYear) : row.taxYear,
     ...Object.fromEntries(allMetrics.map((m) => [m.key, m.compute(row)])),
   }));
+  const axisValueByTaxYear = new Map(chartData.map((d) => [d.taxYear, d.axisValue]));
   const visibleMetrics = allMetrics.filter((m) => selectedMetrics.includes(m.key));
 
   return (
@@ -769,11 +833,19 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
             <LineChart data={chartData} margin={{ top: 24 + Math.max(0, maxEventStackSize - 1) * 12, right: 20, bottom: 10, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
               {shortfallRanges.map((r) => (
-                <ReferenceArea key={`shortfall:${r.start}`} x1={r.start} x2={r.end} fill="#e03131" fillOpacity={0.1} ifOverflow="extendDomain" />
+                <ReferenceArea
+                  key={`shortfall:${r.start}`}
+                  x1={axisValueByTaxYear.get(r.start) ?? r.start}
+                  x2={axisValueByTaxYear.get(r.end) ?? r.end}
+                  fill="#e03131"
+                  fillOpacity={0.1}
+                  ifOverflow="extendDomain"
+                />
               ))}
               <XAxis
-                dataKey="taxYear"
-                tickFormatter={(v: string) => v.split("-")[0] ?? v}
+                dataKey="axisValue"
+                type="category"
+                tickFormatter={(v: string | number) => (axisMode === "taxYear" ? (String(v).split("-")[0] ?? String(v)) : String(v))}
                 tick={{ fill: chartTextColor }}
                 stroke={chartGridColor}
               />
@@ -794,7 +866,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
               {stackedChartEvents.map((e) => (
                 <ReferenceLine
                   key={e.key}
-                  x={e.taxYear}
+                  x={axisValueByTaxYear.get(e.taxYear) ?? e.taxYear}
                   stroke={e.color}
                   strokeDasharray="4 4"
                   ifOverflow="extendDomain"
@@ -816,8 +888,18 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
             right of that section. Then outgoings, tax, and net worth.
           </InfoTip>
         </Group>
-        <Switch label="Show age" checked={showAge} onChange={(e) => setShowAge(e.currentTarget.checked)} />
+        <Select
+          label="Show"
+          data={rowAxisModeOptions(people)}
+          value={axisMode}
+          onChange={(v) => setAxisMode(v === "myAge" || v === "otherAge" ? v : "taxYear")}
+          allowDeselect={false}
+          w={160}
+        />
       </Group>
+      <Text size="xs" c="dimmed">
+        Also sets what the graph above is plotted against.
+      </Text>
       <Text size="sm" c="dimmed">
         Colour-coded by section — teal for taxable, cyan for non-taxable.
       </Text>
@@ -833,7 +915,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           <Table.Thead>
             <Table.Tr>
               <Table.Th w={TABLE_COLUMN_WIDTH} rowSpan={2}>
-                Tax year
+                {rowAxisColumnLabel(axisMode, people)}
               </Table.Th>
               {pensionBalanceMetrics.length > 0 && (
                 <Table.Th colSpan={pensionBalanceMetrics.length} bg="var(--mantine-color-teal-light)" ta="center">
@@ -879,17 +961,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
               const netWorth = computeNetWorth(row);
               return (
                 <Table.Tr key={row.taxYear}>
-                  <Table.Td>
-                    {row.taxYear}
-                    {showAge && (
-                      <>
-                        <br />
-                        <Text span size="xs" c="dimmed">
-                          {ageLabel(row, scenario.household.people)}
-                        </Text>
-                      </>
-                    )}
-                  </Table.Td>
+                  <Table.Td>{rowAxisLabel(row, axisMode, people)}</Table.Td>
                   {pensionBalanceMetrics.map((m) => (
                     <Table.Td key={m.key} bg="var(--mantine-color-teal-light)" ta="right">
                       £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
