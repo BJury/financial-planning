@@ -8,8 +8,9 @@ import {
   type Pence,
   type ValidationIssue,
 } from "@fp/engine";
-import { Checkbox, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
+import { Checkbox, Group, NumberInput, Select, Stack, Text, TextInput } from "@mantine/core";
 import { AgeOrDateInput } from "../components/AgeOrDateInput.js";
+import { InfoTip } from "../components/InfoTip.js";
 
 export interface CatalogItemFormProps<TConfig extends object> {
   readonly fields: readonly CatalogFieldSchema<TConfig>[];
@@ -107,7 +108,19 @@ function CatalogFieldInput<TConfig>({
       // nominal for display, since the stored value is always real.
       return (
         <NumberInput
-          label={field.label}
+          label={
+            <Group gap={4} wrap="nowrap">
+              <span>{field.label}</span>
+              <InfoTip>
+                Entered and shown before inflation (what you&rsquo;d naturally quote, e.g. &ldquo;3% pay
+                rises&rdquo;), then converted automatically to today&rsquo;s-money terms — that&rsquo;s what the
+                engine actually simulates with. This field starts pre-filled at your scenario&rsquo;s own inflation
+                rate, which means flat, no real growth; typing <strong>0</strong> here doesn&rsquo;t mean
+                &ldquo;stays flat&rdquo; — it means growing slower than inflation, so the figure will actually shrink
+                in today&rsquo;s money over time.
+              </InfoTip>
+            </Group>
+          }
           description="Before inflation — adjusted for it automatically"
           required={field.required}
           value={typeof value === "number" ? convertRealToNominal(value, inflationRate) * 100 : ""}
