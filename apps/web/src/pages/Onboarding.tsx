@@ -789,7 +789,8 @@ export function Onboarding() {
               visibleFrom="xs"
             />
           </Group>
-          <Group gap="xs">
+          {/* Hidden below "sm" (the same breakpoint the Navbar itself collapses at) — with the burger, title, and plan name already competing for space on a narrow header, these four wrapped onto their own row(s) and, since AppShell.Header has a fixed height, overflowed straight over the page content below it. Moved into the mobile nav drawer instead (below), where there's always room. */}
+          <Group gap="xs" visibleFrom="sm">
             <PlanFileControls />
             <AboutDialog />
             <ColorSchemeToggle />
@@ -800,6 +801,11 @@ export function Onboarding() {
       <AppShell.Navbar p="md">
         <ScrollArea offsetScrollbars="y">
           <Stack gap="xl" pb="xl">
+            <Group gap="xs" hiddenFrom="sm">
+              <PlanFileControls />
+              <AboutDialog />
+              <ColorSchemeToggle />
+            </Group>
             <Button variant="light" onClick={() => setQuickStartOpened(true)}>
               Quick start
             </Button>

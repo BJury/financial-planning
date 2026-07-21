@@ -241,8 +241,12 @@ export function QuickStartWizard({
         {/* Dots only, no per-step labels crammed onto the track — with 7
             steps, labels wrapped onto a messy second line at any
             reasonable modal width. The current step's own name is shown
-            properly below instead, as a heading with room to breathe. */}
-        <Stepper active={active} size="xs" iconSize={24}>
+            properly below instead, as a heading with room to breathe.
+            Hidden below "xs" entirely — even the dots-only track still
+            wraps onto two broken-looking rows on a narrow phone (mismatched
+            connector lines), and the "Step X of Y" text alongside the
+            heading below already conveys the same progress. */}
+        <Stepper active={active} size="xs" iconSize={24} visibleFrom="xs">
           {steps.map((step) => (
             <Stepper.Step key={step.key} />
           ))}
