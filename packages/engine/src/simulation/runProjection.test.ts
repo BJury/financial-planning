@@ -143,19 +143,17 @@ describe("runProjection — golden-file scenario: £70,000 salary + relief-at-so
     expect(year0?.accountBalances.get("pension1")).toBe(poundsToPence(15375));
   });
 
-  it("credits the ISA contribution, plus the surplus cash sweep, and grows the ISA balance", () => {
+  it("credits the ISA contribution (only) and grows the ISA balance — no automatic reinvesting of the remaining net income", () => {
     const result = runProjection(makeGoldenScenario(), ruleSet2026_27, 1);
     const year0 = result.rows[0];
-    // £2,000 start + £5,000 contribution = £7,000. Net income (£43,157.40,
-    // see the Income Tax test above — already net of both the £4,000
-    // pension and £5,000 ISA contributions, so the sweep isn't investing
-    // that same money a second time) still comfortably exceeds the
-    // remaining ISA subscription room (£20,000 limit - £5,000 already
-    // contributed = £15,000), so the sweep is capped there regardless —
-    // £7,000 + £15,000 = £22,000, grown at 4% = £22,880.00. The remaining
-    // £28,157.40 of surplus has nowhere to go (no GIA in this scenario)
-    // and stays unswept, per the sweep's documented v1 scope.
-    expect(year0?.accountBalances.get("isa1")).toBe(poundsToPence(22880));
+    // £2,000 start + £5,000 contribution = £7,000, grown at 4% = £7,280.00.
+    // Net income (£43,157.40, see the Income Tax test above — already net
+    // of both the £4,000 pension and £5,000 ISA contributions) is *not*
+    // automatically swept into the ISA's remaining subscription room —
+    // it stays visible as `unallocatedSurplus` on the person result
+    // instead (SPEC.md §5.1 step 7).
+    expect(year0?.accountBalances.get("isa1")).toBe(poundsToPence(7280));
+    expect(result.rows[0]?.perPerson[0]?.unallocatedSurplus).toBe(poundsToPence(43157.4));
   });
 
   it("produces identical Income Tax and NI every year when salary and thresholds are both flat in real terms", () => {
@@ -1397,12 +1395,12 @@ describe("runProjection — GIA and cash accounts", () => {
   });
 });
 
-describe("runProjection — surplus cash sweep", () => {
+describe("runProjection — unallocated surplus (no automatic reinvesting)", () => {
   function makeSweepScenario(options: {
     readonly grossAnnualSalary: number; // pounds
     readonly hasIsa?: boolean;
     readonly hasGia?: boolean;
-    readonly isaContribution?: number; // pounds — an existing manual contribution, ahead of the sweep
+    readonly isaContribution?: number; // pounds — an existing manual contribution
     readonly livingExpenses?: number; // pounds
   }): Scenario {
     const person: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 95 };
@@ -1447,20 +1445,18 @@ describe("runProjection — surplus cash sweep", () => {
     };
   }
 
-  it("sweeps net income entirely into the ISA when it fits within the remaining annual subscription limit", () => {
+  it("surfaces positive net income as unallocatedSurplus without crediting an ISA the person holds", () => {
     const scenario = makeSweepScenario({ grossAnnualSalary: 22000, hasIsa: true });
     const result = runProjection(scenario, ruleSet2026_27, 1);
     const row = result.rows[0];
     const personResult = row?.perPerson[0];
 
     expect(personResult?.netIncome).toBeGreaterThan(0);
-    expect(personResult?.netIncome).toBeLessThan(poundsToPence(20000)); // comfortably under the ISA limit
-    expect(personResult?.surplusSweptToIsa).toBe(personResult?.netIncome);
-    expect(personResult?.surplusSweptToGia).toBe(0);
-    expect(row?.accountBalances.get("isa1")).toBe(personResult?.netIncome);
+    expect(personResult?.unallocatedSurplus).toBe(personResult?.netIncome);
+    expect(row?.accountBalances.get("isa1")).toBe(0);
   });
 
-  it("caps the ISA sweep at the remaining annual subscription limit and spills the rest into the GIA", () => {
+  it("does not credit a GIA either, even for surplus well beyond the ISA subscription limit", () => {
     const scenario = makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true, hasGia: true });
     const result = runProjection(scenario, ruleSet2026_27, 1);
     const row = result.rows[0];
@@ -1468,55 +1464,35 @@ describe("runProjection — surplus cash sweep", () => {
 
     const isaLimit = poundsToPence(ruleSet2026_27.isa.annualSubscriptionLimit);
     expect(personResult?.netIncome).toBeGreaterThan(isaLimit);
-    expect(personResult?.surplusSweptToIsa).toBe(isaLimit);
-    expect(personResult?.surplusSweptToGia).toBe(pence((personResult?.netIncome ?? 0) - isaLimit));
-    expect(row?.accountBalances.get("isa1")).toBe(isaLimit);
-    expect(row?.accountBalances.get("gia1")).toBe(personResult?.surplusSweptToGia);
+    expect(personResult?.unallocatedSurplus).toBe(personResult?.netIncome);
+    expect(row?.accountBalances.get("isa1")).toBe(0);
+    expect(row?.accountBalances.get("gia1")).toBe(0);
+    expect(row?.costBasisByAccountId.get("gia1")).toBe(0);
   });
 
-  it("accounts for an existing manual ISA contribution when computing the remaining sweep room", () => {
-    const isaLimit = ruleSet2026_27.isa.annualSubscriptionLimit;
+  it("an existing manual ISA contribution still reduces netIncome/unallocatedSurplus (as an accountContribution), independent of any sweep", () => {
     const manualContribution = 15000;
-    const scenario = makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true, hasGia: true, isaContribution: manualContribution });
-    const result = runProjection(scenario, ruleSet2026_27, 1);
-    const personResult = result.rows[0]?.perPerson[0];
+    const withContribution = runProjection(
+      makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true, isaContribution: manualContribution }),
+      ruleSet2026_27,
+      1,
+    );
+    const withoutContribution = runProjection(makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true }), ruleSet2026_27, 1);
 
-    // Only the remaining £5,000 of ISA room (£20,000 - £15,000 already contributed) is available to the sweep.
-    expect(personResult?.surplusSweptToIsa).toBe(poundsToPence(isaLimit - manualContribution));
+    const withResult = withContribution.rows[0]?.perPerson[0];
+    const withoutResult = withoutContribution.rows[0]?.perPerson[0];
+    expect(withResult?.unallocatedSurplus).toBe(pence((withoutResult?.unallocatedSurplus ?? 0) - poundsToPence(manualContribution)));
+    expect(withContribution.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(manualContribution));
   });
 
-  it("sweeps entirely into the GIA (with cost basis increasing too) when there's no ISA account", () => {
-    const scenario = makeSweepScenario({ grossAnnualSalary: 30000, hasGia: true });
-    const result = runProjection(scenario, ruleSet2026_27, 1);
-    const row = result.rows[0];
-    const personResult = row?.perPerson[0];
-
-    expect(personResult?.netIncome).toBeGreaterThan(0);
-    expect(personResult?.surplusSweptToIsa).toBe(0);
-    expect(personResult?.surplusSweptToGia).toBe(personResult?.netIncome);
-    expect(row?.accountBalances.get("gia1")).toBe(personResult?.netIncome);
-    expect(row?.costBasisByAccountId.get("gia1")).toBe(personResult?.netIncome);
-  });
-
-  it("doesn't sweep anywhere when the person holds neither an ISA nor a GIA", () => {
-    const scenario = makeSweepScenario({ grossAnnualSalary: 30000 });
-    const result = runProjection(scenario, ruleSet2026_27, 1);
-    const personResult = result.rows[0]?.perPerson[0];
-
-    expect(personResult?.netIncome).toBeGreaterThan(0);
-    expect(personResult?.surplusSweptToIsa).toBe(0);
-    expect(personResult?.surplusSweptToGia).toBe(0);
-  });
-
-  it("doesn't sweep a zero or negative net income", () => {
+  it("unallocatedSurplus is zero when net income is zero or negative, and no account is credited or debited", () => {
     const scenario = makeSweepScenario({ grossAnnualSalary: 30000, hasIsa: true, hasGia: true, livingExpenses: 100000 });
     const result = runProjection(scenario, ruleSet2026_27, 1);
     const row = result.rows[0];
     const personResult = row?.perPerson[0];
 
     expect(personResult?.netIncome).toBeLessThan(0);
-    expect(personResult?.surplusSweptToIsa).toBe(0);
-    expect(personResult?.surplusSweptToGia).toBe(0);
+    expect(personResult?.unallocatedSurplus).toBe(0);
     expect(row?.accountBalances.get("isa1")).toBe(0);
     expect(row?.accountBalances.get("gia1")).toBe(0);
   });
@@ -1689,8 +1665,11 @@ describe("runProjection — property sale (SPEC.md §3.8, §5.6)", () => {
     // The property and its mortgage are gone from the balance sheet...
     expect(result.rows[0]?.accountBalances.get("prop1")).toBe(0);
     expect(result.rows[0]?.mortgageBalanceByPropertyId.get("prop1")).toBe(0);
-    // ...and the net proceeds flow through the ordinary surplus cash sweep, exactly like any other windfall (no ISA here, so it lands in the GIA).
-    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(240000));
+    // ...and (no destination configured on this sale) the net proceeds are
+    // not automatically invested anywhere — they stay visible as ordinary
+    // net income / unallocated surplus, exactly like any other windfall.
+    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(0);
+    expect(person0?.unallocatedSurplus).toBe(poundsToPence(240000));
   });
 
   it("hand-verified: a rental property sale is taxed at the residential CGT rate after the Annual Exempt Amount", () => {
@@ -1895,12 +1874,11 @@ describe("runProjection — property sale destination account (SPEC.md §3.8)", 
     expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(0);
   });
 
-  it("an ISA destination already touched by the automatic surplus sweep isn't double-credited past the annual limit", () => {
+  it("a destination ISA already capped by the sale isn't credited further — the remainder is just unallocated net income", () => {
     // No GIA/cash to fall back into, so once the ISA's own £20,000 room is
-    // used by the sale, the £220,000 remainder becomes ordinary net
-    // income — and the *separate* end-of-year surplus sweep (6c) must not
-    // then also try to push that same net income back into the very ISA
-    // the sale already maxed out.
+    // used by the sale, the £220,000 remainder becomes ordinary net income
+    // and (with no automatic reinvesting) stays visible as unallocated
+    // surplus rather than being credited anywhere else.
     const isa: Account = { kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: zeroPence(), annualGrowthRate: 0 };
     const scenario: Scenario = {
       schemaVersion: 1,
@@ -1916,7 +1894,7 @@ describe("runProjection — property sale destination account (SPEC.md §3.8)", 
 
     expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(20000));
     expect(result.rows[0]?.perPerson[0]?.propertySaleNetProceeds).toBe(poundsToPence(220000));
-    expect(result.rows[0]?.perPerson[0]?.surplusSweptToIsa).toBe(0);
+    expect(result.rows[0]?.perPerson[0]?.unallocatedSurplus).toBe(poundsToPence(220000));
   });
 
   it("falls back to ordinary net income, exactly like no destination being set, when destinationAccountId points at a nonexistent account", () => {
@@ -1968,14 +1946,19 @@ describe("runProjection — combined multi-year rental, mortgage, and sale (SPEC
   /**
    * A regression test pinning down a full plan's worth of behaviour
    * across the rental-income/mortgage/sale transition in one scenario —
-   * salary + a mortgaged rental property (sold 5 years in) + a GIA
-   * catching the surplus sweep. Every expected figure below was
-   * cross-checked two independent ways during manual verification before
-   * being pinned here: once via the Dashboard's year-by-year table and
-   * once via the Tax Breakdown page for the same year (which reads the
-   * same `PersonYearResult` fields through separate rendering code), so
-   * this isn't a single self-consistent-but-possibly-wrong computation —
-   * it's the same numbers two different views independently agreed on.
+   * salary + a mortgaged rental property (sold 5 years in) + an otherwise
+   * unused GIA (kept only to confirm it's never auto-credited, now that
+   * surplus net income isn't automatically reinvested anywhere). The
+   * per-year Income Tax/net income figures were cross-checked two
+   * independent ways during manual verification before being pinned
+   * here: once via the Dashboard's year-by-year table and once via the
+   * Tax Breakdown page for the same year (which reads the same
+   * `PersonYearResult` fields through separate rendering code). The
+   * `netWorth` figures are derived from those same pinned per-year
+   * figures (account balances minus mortgage balance; with no automatic
+   * reinvesting, net worth here is just the rental property's own value
+   * net of its mortgage, until the sale — after which, with nothing
+   * capturing the sale proceeds either, it's £0).
    */
   function makeCombinedScenario(): Scenario {
     const person: Person = { id: PERSON_ID, dateOfBirth: "1975-01-01", targetRetirementAge: 67, projectionEndAge: 95 };
@@ -2030,11 +2013,11 @@ describe("runProjection — combined multi-year rental, mortgage, and sale (SPEC
     // (SPEC.md §4 journey 5's whole point: this must match what a second,
     // independent view — the Tax Breakdown page — computes too).
     const ongoingYears = [
-      { row: 0, dashboardIncomeTax: 9152, netIncome: 34079.94, netWorth: 168634.09 },
-      { row: 1, dashboardIncomeTax: 9205.63, netIncome: 34240.31, netWorth: 210333.16 },
-      { row: 2, dashboardIncomeTax: 9258.46, netIncome: 34395.1, netWorth: 252096.28 },
-      { row: 3, dashboardIncomeTax: 9310.58, netIncome: 34544.42, netWorth: 293922.54 },
-      { row: 4, dashboardIncomeTax: 9361.99, netIncome: 34688.39, netWorth: 335811.1 },
+      { row: 0, dashboardIncomeTax: 9152, netIncome: 34079.94, netWorth: 134554.15 },
+      { row: 1, dashboardIncomeTax: 9205.63, netIncome: 34240.31, netWorth: 142012.91 },
+      { row: 2, dashboardIncomeTax: 9258.46, netIncome: 34395.1, netWorth: 149380.93 },
+      { row: 3, dashboardIncomeTax: 9310.58, netIncome: 34544.42, netWorth: 156662.77 },
+      { row: 4, dashboardIncomeTax: 9361.99, netIncome: 34688.39, netWorth: 163862.94 },
     ];
     for (const year of ongoingYears) {
       const person = result.rows[year.row]?.perPerson[0];
@@ -2052,7 +2035,7 @@ describe("runProjection — combined multi-year rental, mortgage, and sale (SPEC
     expect(year2?.rentalProfitIncome).toBe(poundsToPence(11883.21));
     expect(year2?.mortgageInterestCredit).toBe(poundsToPence(926.82));
     expect(year2?.otherExpenses).toBe(poundsToPence(10635.25));
-    expect(year2?.surplusSweptToGia).toBe(poundsToPence(34395.1));
+    expect(year2?.unallocatedSurplus).toBe(poundsToPence(34395.1));
 
     // Year 5 (2031-32): the sale year — rental profit stops, CGT appears once, net income jumps.
     const saleYear = result.rows[5]?.perPerson[0];
@@ -2061,7 +2044,9 @@ describe("runProjection — combined multi-year rental, mortgage, and sale (SPEC
     expect(saleYear?.propertySaleCapitalGainsTax).toBe(poundsToPence(15223.8));
     expect(saleYear?.propertySalePrivateResidenceReliefApplied).toBe(false);
     expect(saleYear?.netIncome).toBe(poundsToPence(209550.72));
-    expect(netWorth(5)).toBe(poundsToPence(381498.88));
+    // No destination configured on the sale, and nothing auto-invests the
+    // proceeds — with the property/mortgage now both zeroed, net worth is £0.
+    expect(netWorth(5)).toBe(0);
 
     // Year 6 (2032-33): post-sale steady state — salary only, exactly matching the sale year's own salary-only Income Tax figure.
     const postSaleYear = result.rows[6]?.perPerson[0];
@@ -2070,7 +2055,7 @@ describe("runProjection — combined multi-year rental, mortgage, and sale (SPEC
     expect(postSaleYear?.incomeTax).toBe(saleYear?.incomeTax);
     expect(postSaleYear?.propertySaleCapitalGainsTax).toBe(0);
     expect(postSaleYear?.netIncome).toBe(poundsToPence(35919.6));
-    expect(netWorth(6)).toBe(poundsToPence(417418.48));
+    expect(netWorth(6)).toBe(0);
   });
 });
 
@@ -2685,7 +2670,7 @@ describe("runProjection — shortfall funding (outgoings exceeding income, SPEC.
   });
 });
 
-describe("runProjection — account contributions reduce net income (no double-counting with the surplus sweep)", () => {
+describe("runProjection — account contributions reduce net income (and only the contribution itself is credited)", () => {
   const CONTRIB_PERSON_ID = personId("c1");
   const contribPerson: Person = { id: CONTRIB_PERSON_ID, dateOfBirth: "1980-01-01", targetRetirementAge: 67, projectionEndAge: 95 };
   const contribHousehold: Household = { people: [contribPerson], relationshipStatus: null, targetIncomeMode: "perPerson" };
@@ -2709,7 +2694,7 @@ describe("runProjection — account contributions reduce net income (no double-c
 
   const PRE_CONTRIBUTION_NET_INCOME = poundsToPence(17919.6);
 
-  it("an ISA contribution reduces netIncome by the amount contributed, so the sweep doesn't also invest it", () => {
+  it("an ISA contribution reduces netIncome by the amount contributed, and only that amount is credited", () => {
     const isa: Account = { kind: "isa", id: "isa1", owner: CONTRIB_PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(0), annualGrowthRate: 0 };
     const drain: IncomeDrainInstance = { id: "isaC1", type: "isaContribution", owner: CONTRIB_PERSON_ID, config: { isaAccountId: "isa1", annualContribution: poundsToPence(5000) } };
     const result = runProjection(makeContribScenario([isa], [drain]), ruleSet2026_27, 1);
@@ -2717,19 +2702,22 @@ describe("runProjection — account contributions reduce net income (no double-c
 
     expect(p?.accountContributions).toBe(poundsToPence(5000));
     expect(p?.netIncome).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
-    // £5,000 contributed + the remaining (already-reduced) net income swept in — not £5,000 plus the FULL pre-contribution net income too.
-    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(PRE_CONTRIBUTION_NET_INCOME);
+    // Only the £5,000 contribution itself is credited — the remaining
+    // (already-reduced) net income is not automatically invested too.
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(5000));
+    expect(p?.unallocatedSurplus).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
   });
 
-  it("a GIA contribution reduces netIncome, so the (uncapped) sweep can't double-invest it", () => {
+  it("a GIA contribution reduces netIncome, and only that amount is credited", () => {
     const gia: Account = { kind: "gia", id: "gia1", owner: CONTRIB_PERSON_ID, currentBalance: poundsToPence(0), costBasis: poundsToPence(0), annualGrowthRate: 0, annualDividendYield: 0 };
     const drain: IncomeDrainInstance = { id: "giaC1", type: "giaContribution", owner: CONTRIB_PERSON_ID, config: { giaAccountId: "gia1", annualContribution: poundsToPence(5000) } };
     const result = runProjection(makeContribScenario([gia], [drain]), ruleSet2026_27, 1);
     const p = result.rows[0]?.perPerson[0];
 
     expect(p?.netIncome).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
-    // Total ending up in the GIA must never exceed what the person actually had (their full pre-contribution net income) — a bug here previously let it exceed that.
-    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(PRE_CONTRIBUTION_NET_INCOME);
+    // Only the £5,000 contribution itself is credited to the GIA.
+    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(5000));
+    expect(p?.unallocatedSurplus).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
   });
 
   it("a cash contribution reduces netIncome", () => {
@@ -3260,7 +3248,7 @@ describe("runProjection — one-off inflow with a chosen ISA/GIA destination (SP
     expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(poundsToPence(5000));
   });
 
-  it("shares its ISA room with the automatic surplus sweep — the sweep only tops up whatever's left, never double-allowing the annual limit", () => {
+  it("a destination-less inflow is not automatically invested — it stays visible as unallocated surplus, even with ISA room and a GIA both available", () => {
     const scenario: Scenario = {
       schemaVersion: 1,
       household: destinationHousehold,
@@ -3271,7 +3259,7 @@ describe("runProjection — one-off inflow with a chosen ISA/GIA destination (SP
       incomeSources: [
         // Uses £15,000 of the £20,000 ISA room directly.
         { id: "inflow1", type: "oneOffInflow", owner: PERSON_ID, config: { amount: poundsToPence(15000), date: "2026-06-01", category: "inheritance", destinationAccountId: "isa1" } },
-        // No destination set — this £10,000 is ordinary net income the surplus sweep will try to invest.
+        // No destination set — this £10,000 is ordinary net income, and (with no automatic reinvesting) is never credited anywhere.
         { id: "inflow2", type: "oneOffInflow", owner: PERSON_ID, config: { amount: poundsToPence(10000), date: "2026-06-01", category: "other" } },
       ],
       incomeDrains: [],
@@ -3281,11 +3269,9 @@ describe("runProjection — one-off inflow with a chosen ISA/GIA destination (SP
 
     const result = runProjection(scenario, ruleSet2026_27, 1);
     const personResult = result.rows[0]?.perPerson[0];
-    // Only £5,000 of ISA room was left (£20,000 - £15,000 already used), so the sweep puts £5,000 in the ISA and spills the remaining £5,000 to the GIA.
-    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(20000));
-    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(5000));
-    expect(personResult?.surplusSweptToIsa).toBe(poundsToPence(5000));
-    expect(personResult?.surplusSweptToGia).toBe(poundsToPence(5000));
+    expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(15000));
+    expect(result.rows[0]?.accountBalances.get("gia1")).toBe(0);
+    expect(personResult?.unallocatedSurplus).toBe(poundsToPence(10000));
   });
 });
 

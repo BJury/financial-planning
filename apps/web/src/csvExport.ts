@@ -18,6 +18,7 @@ const COLUMNS = [
   "Property sale net proceeds",
   "Shortfall funded from savings",
   "Net income",
+  "Unallocated surplus",
   "Household net worth",
 ] as const;
 
@@ -89,6 +90,7 @@ export function projectionToCsv(result: ProjectionResult): string {
           money(person.propertySaleNetProceeds),
           money(person.shortfallFundedFromSavings),
           money(netIncome),
+          money(person.unallocatedSurplus),
           netWorth,
         ]
           .map((field) => csvField(field))

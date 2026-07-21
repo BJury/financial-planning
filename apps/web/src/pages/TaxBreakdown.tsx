@@ -375,8 +375,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
       {(person.taxFreeIncome > 0 ||
         person.otherExpenses > 0 ||
         person.accountContributions > 0 ||
-        person.surplusSweptToIsa > 0 ||
-        person.surplusSweptToGia > 0 ||
+        person.unallocatedSurplus > 0 ||
         person.shortfallFundedFromSavings > 0 ||
         person.livingExpensesShortfall) && (
         <Section title="Other cash flows">
@@ -391,11 +390,12 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
               info="What you personally paid in — a relief-at-source pension's basic-rate top-up isn't counted, since that's not your own money."
             />
           )}
-          {person.surplusSweptToIsa > 0 && (
-            <KeyValue label="Surplus cash swept into the ISA" amount={person.surplusSweptToIsa} />
-          )}
-          {person.surplusSweptToGia > 0 && (
-            <KeyValue label="Surplus cash swept into the GIA" amount={person.surplusSweptToGia} />
+          {person.unallocatedSurplus > 0 && (
+            <KeyValue
+              label="Unallocated surplus"
+              amount={person.unallocatedSurplus}
+              info="Left over after tax, spending, and contributions — not automatically invested anywhere. Add a contribution drain if you'd like to capture it."
+            />
           )}
           {person.shortfallFundedFromSavings > 0 && (
             <KeyValue

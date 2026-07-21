@@ -620,10 +620,13 @@ handled at whichever level (person or household) the account is owned at
    the year: combined net income minus these drains.
 7. Allocate remaining surplus cash to savings/investment per the user's
    contribution Income Drains, split across each person's own accounts
-   (ISA/pension/GIA) and any joint accounts; any surplus left unallocated
-   is swept into that person's (or the household's) `CashAccount` rather
-   than left untracked, so it stays visible in net worth and starts
-   accruing (taxable) interest like any other cash balance.
+   (ISA/pension/GIA) and any joint accounts. Any surplus left unallocated
+   after that is *not* automatically invested anywhere (an earlier design
+   swept it into an ISA/GIA/CashAccount on the user's behalf; this was
+   found too opaque — a balance changing that the user never explicitly
+   directed) — it's simply surfaced as `unallocatedSurplus` so the user
+   can see it and decide for themselves whether to add a contribution
+   drain to actually capture it.
 8. Grow all account balances by their assumed growth rate, net of charges.
 9. For each person with an active `TargetDrawdownIncome` Income Source
    that year (§5.7.1 — its start date having been reached is what actually

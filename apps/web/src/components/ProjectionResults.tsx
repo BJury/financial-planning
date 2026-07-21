@@ -16,6 +16,7 @@ import {
   type YearLedgerRow,
 } from "@fp/engine";
 import { Alert, Button, Center, Group, MultiSelect, Select, Stack, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { useLocalStorage } from "@mantine/hooks";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -285,6 +286,16 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         label: "Contributions",
         compute: (row) => sumPence(row.perPerson.map((p) => p.accountContributions)),
         isIncluded: (scenario) => scenario.incomeDrains.some((d) => CONTRIBUTION_DRAIN_TYPES.has(d.type)),
+      },
+      {
+        key: "unallocatedSurplus",
+        label: "Unallocated surplus",
+        // Left over after tax, spending, and contributions — not
+        // automatically invested anywhere (no more automatic "surplus
+        // cash sweep" into an ISA/GIA the user never asked for). Add a
+        // contribution drain to actually capture it, or leave it as a
+        // visible reminder of how much headroom a plan has each year.
+        compute: (row) => sumPence(row.perPerson.map((p) => p.unallocatedSurplus)),
       },
     ],
   },
@@ -949,12 +960,20 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       setAxisMode("taxYear");
     }
   }, [axisMode, scenario]);
-  // A view preference, not part of the financial plan — kept as local
-  // component state rather than on the Scenario. "Net worth" seeds the
+  // A view preference, not part of the financial plan — kept out of the
+  // Scenario itself, but persisted to localStorage (not just component
+  // state) so a chosen set of lines survives a page reload rather than
+  // resetting every time. Stale keys from a previous scenario's own
+  // accounts/income sources (e.g. an account since deleted) are harmless:
+  // `selectedVisibleMetrics` below only renders whichever of these keys
+  // still exist in the current `allMetrics`. "Net worth" seeds the
   // balances chart the same way it always has; "Net income" seeds the
   // income chart below it so that one isn't an empty placeholder by
   // default either.
-  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(["netWorth", "netIncome"]);
+  const [selectedMetrics, setSelectedMetrics] = useLocalStorage<string[]>({
+    key: "canistop:selected-chart-lines",
+    defaultValue: ["netWorth", "netIncome"],
+  });
 
   const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
   const keyFlags = useMemo(() => computeKeyFlags(result, scenario), [result, scenario]);
@@ -1200,7 +1219,12 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           w={160}
         />
       </Group>
-      <div style={{ overflowX: "auto" }}>
+      <Text c="dimmed" size="xs">
+        Figures are estimates from a personal project and may be wrong — don&rsquo;t rely on them as your only source
+        for real financial decisions.
+      </Text>
+      {/* Bounded height (not just `overflowX: auto`) so both scrollbars stay reachable near the top of this section — with 20+ rows, a plain full-height table pushes its own horizontal scrollbar to the very bottom of the page, forcing a scroll-down-then-right dance just to see the rest of a row. The header is pinned (`position: sticky`) so scrolling within this box doesn't lose track of which column is which. */}
+      <div style={{ overflow: "auto", maxHeight: "70vh" }}>
         <Table
           striped
           withTableBorder
@@ -1209,7 +1233,8 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           ff="monospace"
           miw={TABLE_COLUMN_WIDTH * (1 + visibleColumnGroups.reduce((n, g) => n + g.columns.length, 0) + 1 + balanceMetrics.length)}
         >
-          <Table.Thead>
+          {/* Mantine's "-light" tokens (used for every coloured header cell below) are translucent tints, not solid fills — fine for a static header, but with `position: sticky` they'd let scrolled-past body rows show through. An opaque base on `Thead` itself sits behind them so the header reads as solid while it's pinned. */}
+          <Table.Thead bg="var(--mantine-color-body)" style={{ position: "sticky", top: 0, zIndex: 1 }}>
             <Table.Tr>
               <Table.Th w={TABLE_COLUMN_WIDTH} rowSpan={2}>
                 {rowAxisColumnLabel(axisMode, people)}

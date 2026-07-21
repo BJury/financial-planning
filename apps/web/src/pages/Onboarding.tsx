@@ -765,7 +765,6 @@ export function Onboarding() {
     <AppShell
       header={{ height: 56 }}
       navbar={{ width: 460, breakpoint: "sm", collapsed: { mobile: !navOpened } }}
-      footer={{ height: 44 }}
       padding="md"
     >
       <AppShell.Header>
@@ -1152,14 +1151,6 @@ export function Onboarding() {
       <AppShell.Main>
         <ProjectionResults scenario={liveScenario} />
       </AppShell.Main>
-
-      <AppShell.Footer>
-        <Group h="100%" px="md">
-          <Text c="dimmed" size="xs">
-            Figures are estimates from a personal project and may be wrong — don&rsquo;t rely on them as your only source for real financial decisions.
-          </Text>
-        </Group>
-      </AppShell.Footer>
     </AppShell>
     {quickStartOpened && (
       <QuickStartWizard existingAnswers={quickStartDefaults} onClose={() => setQuickStartOpened(false)} onComplete={applyQuickStart} />

@@ -182,10 +182,16 @@ export interface PersonYearResult {
   readonly propertySaleNetProceeds: Pence;
   /** Earned-income net plus any drawdown net achieved — the person's total spendable cash for the year. */
   readonly netIncome: Pence;
-  /** Any positive `netIncome` not otherwise directed by a contribution drain, automatically invested into an ISA (up to the remaining annual subscription limit) — see `surplusSweptToGia` for the rest. */
-  readonly surplusSweptToIsa: Pence;
-  /** Surplus beyond the ISA's remaining room (or with no ISA account at all), swept into a GIA instead. */
-  readonly surplusSweptToGia: Pence;
+  /**
+   * Any positive `netIncome` not otherwise directed by a contribution
+   * drain. Deliberately *not* auto-invested anywhere — a prior version of
+   * this engine swept it into an ISA/GIA automatically, which the user
+   * found opaque (money moving into an account they never told the
+   * planner to fund). Surfaced here purely for visibility, so the user
+   * can see how much was left over each year and decide for themselves
+   * whether to add a contribution drain to capture it.
+   */
+  readonly unallocatedSurplus: Pence;
   /**
    * When `netIncome` is negative (outgoings exceeded income this year),
    * the shortfall is automatically funded from this person's own liquid
@@ -856,15 +862,6 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       let propertySaleCapitalGainsTax = zeroPence();
       let propertySalePrivateResidenceReliefApplied = false;
       let propertySaleNetProceeds = zeroPence();
-      // Accounts a property-sale destination has actually credited this
-      // person this year — fed into the drawdown accumulator's own
-      // `touchedAccountIds` below (6c's surplus sweep already respects
-      // that set to avoid reinvesting into an account another mechanism
-      // just used), so a sale's chosen ISA can't *also* receive the
-      // automatic surplus sweep past its annual limit. Only needed for
-      // this loop's own multi-property, same-ISA case below — GIA/cash
-      // have no cap, so double-crediting them isn't a correctness risk.
-      const propertySaleTouchedAccountIds = new Set<string>();
       let isaCreditedThisPersonYearFromSales = zeroPence();
       for (const property of scenario.accounts.filter(isProperty)) {
         if ((property.owner !== person.id && property.owner !== "joint") || !property.plannedSale) continue;
@@ -922,7 +919,6 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           if (credited > 0) {
             nextAccountBalances.set(destinationAccount.id, addPence(nextAccountBalances.get(destinationAccount.id) ?? zeroPence(), credited));
             isaCreditedThisPersonYearFromSales = addPence(isaCreditedThisPersonYearFromSales, credited);
-            propertySaleTouchedAccountIds.add(destinationAccount.id);
             proceedsShareRemaining = subtractPence(proceedsShareRemaining, credited);
           }
           if (proceedsShareRemaining > 0) {
@@ -946,11 +942,9 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         } else if (destinationAccount?.kind === "gia" && (destinationAccount.owner === person.id || destinationAccount.owner === "joint")) {
           nextAccountBalances.set(destinationAccount.id, addPence(nextAccountBalances.get(destinationAccount.id) ?? zeroPence(), proceedsShareRemaining));
           nextCostBasisByAccountId.set(destinationAccount.id, addPence(nextCostBasisByAccountId.get(destinationAccount.id) ?? zeroPence(), proceedsShareRemaining));
-          propertySaleTouchedAccountIds.add(destinationAccount.id);
           proceedsShareRemaining = zeroPence();
         } else if (destinationAccount?.kind === "cash" && (destinationAccount.owner === person.id || destinationAccount.owner === "joint")) {
           nextAccountBalances.set(destinationAccount.id, addPence(nextAccountBalances.get(destinationAccount.id) ?? zeroPence(), proceedsShareRemaining));
-          propertySaleTouchedAccountIds.add(destinationAccount.id);
           proceedsShareRemaining = zeroPence();
         }
         propertySaleNetProceeds = addPence(propertySaleNetProceeds, proceedsShareRemaining);
@@ -1020,7 +1014,6 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         propertySaleCapitalGainsTax,
         propertySalePrivateResidenceReliefApplied,
         propertySaleNetProceeds,
-        propertySaleTouchedAccountIds,
         nationalInsurance,
         annualAllowanceCharge,
         mpaaActive,
@@ -1059,21 +1052,6 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       taxableIncomeSoFarForBands: Pence;
       /** Starts at this person's own remaining Annual Exempt Amount (post property sale) — an annual, not lifetime, allowance (SPEC.md §5.5). */
       capitalGainsExemptAmountRemaining: Pence;
-      /**
-       * Every ISA/GIA account this year's drawdown actually drew a
-       * nonzero amount from — read by the surplus sweep below (6c) so it
-       * never reinvests achieved-but-unspent drawdown income right back
-       * into the very account it just came from (a real bug this
-       * prevents: an ISA-only, no-living-expenses scenario would
-       * otherwise show a drawdown "succeeding" every year while its
-       * source account's balance never actually fell, since the swept
-       * surplus silently replaced what was just withdrawn). Deliberately
-       * doesn't block a *different* account of the same kind, or the
-       * shortfall-funding step (6d), which only ever draws down further
-       * and reads the already-updated balance, so it can't loop the same
-       * way.
-       */
-      readonly touchedAccountIds: Set<string>;
     }
     const drawdownAccumulators = new Map<PersonId, DrawdownAccumulator>(
       pass2aResults.map((p) => [
@@ -1091,10 +1069,6 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           bucketTotals: new Map(),
           taxableIncomeSoFarForBands: p.pass1.taxableIncome,
           capitalGainsExemptAmountRemaining: p.capitalGainsExemptAmountRemainingAfterPropertySale,
-          // Seeded (not empty) so the surplus sweep below (6c) won't also
-          // route ordinary income into an ISA a property sale already
-          // credited this year, past its annual limit.
-          touchedAccountIds: new Set<string>(p.propertySaleTouchedAccountIds),
         },
       ]),
     );
@@ -1110,11 +1084,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       }
     };
 
-    const applyDrawdownResultToAccumulator = (
-      personId: PersonId,
-      result: DrawdownSolverResult,
-      accountIds: ReturnType<typeof discoverAccountIds>,
-    ) => {
+    const applyDrawdownResultToAccumulator = (personId: PersonId, result: DrawdownSolverResult) => {
       const accumulator = drawdownAccumulators.get(personId);
       if (!accumulator) return;
       // Only ordinary taxable pension income occupies Income Tax band
@@ -1137,12 +1107,6 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       accumulator.netAchieved = addPence(accumulator.netAchieved, result.netAchieved);
       accumulator.shortfall = accumulator.shortfall || result.shortfall;
       mergeBucketsInto(accumulator, result.buckets);
-      if (result.isaGrossWithdrawn > 0) {
-        for (const id of accountIds.isaAccountIds) accumulator.touchedAccountIds.add(id);
-      }
-      if (result.giaGrossWithdrawn > 0) {
-        for (const id of accountIds.giaAccountIds) accumulator.touchedAccountIds.add(id);
-      }
     };
 
     /**
@@ -1325,7 +1289,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           const accountIds = accountIdsByPerson.get(personId) ?? discoverAccountIds(personId);
           creditAccountsAfterDrawdown(accountIds, result);
           nextLumpSumAllowanceUsed.set(personId, addPence(nextLumpSumAllowanceUsed.get(personId) ?? zeroPence(), result.lumpSumAllowanceUsed));
-          applyDrawdownResultToAccumulator(personId, result, accountIds);
+          applyDrawdownResultToAccumulator(personId, result);
         }
         continue;
       }
@@ -1351,7 +1315,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
 
       creditAccountsAfterDrawdown(accountIds, result);
       nextLumpSumAllowanceUsed.set(source.owner, addPence(nextLumpSumAllowanceUsed.get(source.owner) ?? zeroPence(), result.lumpSumAllowanceUsed));
-      applyDrawdownResultToAccumulator(source.owner, result, accountIds);
+      applyDrawdownResultToAccumulator(source.owner, result);
     }
 
     // --- MPAA trigger detection (SPEC.md §5.4) ------------------------------
@@ -1483,74 +1447,15 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         ]),
       );
 
-      // 6c. Surplus cash sweep: any positive net income not otherwise
-      //     directed by a contribution drain is automatically invested —
-      //     into an ISA first (up to the remaining annual subscription
-      //     limit), then a GIA for anything beyond that, rather than left
-      //     untracked (this project's own priority order; SPEC.md §5.1
-      //     step 7's default is a plain CashAccount). Uses this person's
-      //     own ISA (which, unlike a GIA, can never be jointly held) or
-      //     their own/a joint GIA, if any — v1 scope, matching every other
-      //     multi-account mechanism in this engine; no sweep happens at
-      //     all if they hold neither. Computed from this year's
-      //     already-final net income, so swept money starts earning
-      //     interest/dividends from next year, not this one.
-      //
-      //     Never sweeps into an account `touchedAccountIds` (above) says
-      //     this year's drawdown already drew a nonzero amount from —
-      //     otherwise, an achieved-but-unspent drawdown (no matching
-      //     living-expenses drain to actually consume it) gets reinvested
-      //     right back into the very account it just came from, silently
-      //     undoing the withdrawal every single year: a real bug this
-      //     specifically prevents, caught from a user report of an
-      //     ISA-only, drawdown-only scenario whose ISA balance never fell
-      //     even though the drawdown target exceeded it. A *different*
-      //     ISA/GIA of the same kind is still a perfectly good sweep
-      //     target — this only skips the exact account(s) just drawn from.
-      //
-      //     Also suppressed entirely while this person has an active,
-      //     *unmet* drawdown target this year (`drawdownShortfall`) — a
-      //     real bug this prevents: automatic income that isn't reduced
-      //     by the drawdown target (state pension, rental profit — a
-      //     documented v1 gap, SPEC.md §5.7.2) can leave positive net
-      //     income even during a genuine shortfall (e.g. state pension
-      //     alone, once a linked account has been exhausted). Sweeping
-      //     that into an emptied account, only to have next year's
-      //     drawdown immediately draw it straight back out again,
-      //     produced a caught live bug: net income oscillating between
-      //     two values year over year instead of ever settling near the
-      //     actual target — there's no genuine "surplus" to invest while
-      //     the target itself isn't being met.
-      let surplusSweptToIsa = zeroPence();
-      let surplusSweptToGia = zeroPence();
-      if (netIncome > 0 && !drawdownShortfall) {
-        let surplusLeft = netIncome;
-        const isaAccount = scenario.accounts.find(
-          (a): a is IsaAccount => a.kind === "isa" && a.owner === person.id && !accumulator?.touchedAccountIds.has(a.id),
-        );
-        if (isaAccount) {
-          const isaRoomRemaining = maxPence(subtractPence(prepared.isa.annualSubscriptionLimit, pass1.isaContributionsThisYear), zeroPence());
-          surplusSweptToIsa = minPence(surplusLeft, isaRoomRemaining);
-          if (surplusSweptToIsa > 0) {
-            const currentBalance = nextAccountBalances.get(isaAccount.id) ?? zeroPence();
-            nextAccountBalances.set(isaAccount.id, addPence(currentBalance, surplusSweptToIsa));
-            surplusLeft = subtractPence(surplusLeft, surplusSweptToIsa);
-          }
-        }
-        if (surplusLeft > 0) {
-          const giaAccount = scenario.accounts.find(
-            (a): a is GiaAccount => a.kind === "gia" && (a.owner === person.id || a.owner === "joint") && !accumulator?.touchedAccountIds.has(a.id),
-          );
-          if (giaAccount) {
-            surplusSweptToGia = surplusLeft;
-            const currentBalance = nextAccountBalances.get(giaAccount.id) ?? zeroPence();
-            nextAccountBalances.set(giaAccount.id, addPence(currentBalance, surplusSweptToGia));
-            // New money invested, not a gain — increases cost basis too (SPEC.md §3.6).
-            const currentCostBasis = nextCostBasisByAccountId.get(giaAccount.id) ?? zeroPence();
-            nextCostBasisByAccountId.set(giaAccount.id, addPence(currentCostBasis, surplusSweptToGia));
-          }
-        }
-      }
+      // 6c. Surplus visibility: any positive net income not otherwise
+      //     directed by a contribution drain is *not* automatically
+      //     invested anywhere — a prior version of this engine swept it
+      //     into an ISA then a GIA on the user's behalf, which was opaque
+      //     (a balance changing that the user never told the planner to
+      //     fund). It's simply surfaced as `unallocatedSurplus` so the
+      //     user can see it and decide for themselves whether to add a
+      //     contribution drain to actually capture it.
+      const unallocatedSurplus = maxPence(netIncome, zeroPence());
 
       // 6d. If net income is negative (outgoings exceeded income this
       //     year), automatically fund the shortfall from this person's
@@ -1669,8 +1574,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         propertySalePrivateResidenceReliefApplied,
         propertySaleNetProceeds,
         netIncome,
-        surplusSweptToIsa,
-        surplusSweptToGia,
+        unallocatedSurplus,
         shortfallFundedFromSavings,
         shortfallCapitalGainsTax,
         livingExpensesShortfall,
