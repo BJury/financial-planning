@@ -24,6 +24,7 @@ import { downloadCsv, projectionToCsv } from "../csvExport.js";
 import { formatMoney } from "../format.js";
 import { InfoTip } from "./InfoTip.js";
 import { computeNetWorth, computeProjection } from "../projection.js";
+import { GAP_ACCOUNT_KIND_LABELS, computeShortfallGaps, type ShortfallGap } from "../shortfallGap.js";
 
 interface ChartMetric {
   readonly key: string;
@@ -1047,6 +1048,31 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
     [stackedChartEvents],
   );
   const shortfallRanges = useMemo(() => (result ? computeShortfallRanges(result) : []), [result]);
+  // Deliberately *not* `shortfallRanges.length > 0` — that's scoped to
+  // drawdown shortfalls only (see its own doc comment), but a Living
+  // Expenses shortfall on its own (no drawdown target at all) is exactly
+  // one of the cases `computeShortfallGaps` below has something useful to
+  // say about (that a pension alone can't fix it).
+  const hasAnyShortfall = useMemo(
+    () => (result ? result.rows.some((row) => row.perPerson.some((p) => p.drawdownShortfall || p.livingExpensesShortfall)) : false),
+    [result],
+  );
+  // `computeShortfallGaps` re-runs the whole engine dozens of times (a
+  // black-box binary search per account kind) — cheap once, but this page
+  // recomputes `scenario` on every keystroke, and running an expensive
+  // search synchronously on every single one would make typing feel
+  // laggy. Debounced into its own effect instead (the same pattern
+  // `persistence/autosave.ts` already uses for IndexedDB writes), so
+  // editing stays instant and this only recomputes once things settle.
+  const [shortfallGaps, setShortfallGaps] = useState<readonly ShortfallGap[]>([]);
+  useEffect(() => {
+    if (!scenario || !hasAnyShortfall) {
+      setShortfallGaps([]);
+      return;
+    }
+    const timeout = setTimeout(() => setShortfallGaps(computeShortfallGaps(scenario)), 500);
+    return () => clearTimeout(timeout);
+  }, [scenario, hasAnyShortfall]);
   const accountMetrics = useMemo(() => (scenario ? buildAccountMetrics(scenario) : []), [scenario]);
   const incomeSourceMetrics = useMemo(() => (scenario ? buildIncomeSourceMetrics(scenario) : []), [scenario]);
   const allMetrics = useMemo(
@@ -1231,6 +1257,36 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           yAxisWidth={sharedYAxisWidth}
         />
       </Stack>
+
+      {shortfallGaps.length > 0 && (
+        <Alert
+          color="red"
+          variant="light"
+          title={
+            <Group gap={4}>
+              <Text size="sm" fw={600} c="inherit">
+                Balances needed to avoid a shortfall
+              </Text>
+              <InfoTip>
+                Each line is independent — &ldquo;£X more in your ISA&rdquo; means that alone, on top of everything
+                else already in the plan unchanged, not stacked with the other lines. Added once, today, to your
+                existing account of that kind (or a new one with this app&rsquo;s usual default assumptions, if you
+                don&rsquo;t have one yet).
+              </InfoTip>
+            </Group>
+          }
+        >
+          <Stack gap={4}>
+            {shortfallGaps.map((gap) => (
+              <Text key={gap.kind} size="sm">
+                {gap.extraNeeded !== undefined
+                  ? `£${penceToPounds(gap.extraNeeded).toLocaleString(undefined, { maximumFractionDigits: 0 })} more in your ${GAP_ACCOUNT_KIND_LABELS[gap.kind]} would have avoided every shortfall in this plan.`
+                  : `Extra ${GAP_ACCOUNT_KIND_LABELS[gap.kind]} savings alone wouldn't have helped — ${gap.unfixableReason}.`}
+              </Text>
+            ))}
+          </Stack>
+        </Alert>
+      )}
 
       <Group justify="space-between">
         <Group gap={4}>
