@@ -12,6 +12,19 @@ import { useScenarioStore } from "../state/store.js";
  * reachable from wherever the user happens to be, per §9.2's "not left
  * undiscovered as a menu item."
  */
+/**
+ * Derives a safe filename from the scenario's own (optional) `name` —
+ * strips characters that are invalid across Windows/macOS/Linux
+ * filesystems rather than just the ones any one OS happens to reject, so
+ * the same export behaves the same way regardless of where it's later
+ * opened. Falls back to the previous fixed filename when unset or when
+ * sanitising leaves nothing usable.
+ */
+function filenameForScenario(name: string | undefined): string {
+  const sanitised = (name ?? "").replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
+  return sanitised ? `${sanitised}.json` : "retirement-plan.json";
+}
+
 export function PlanFileControls() {
   const scenario = useScenarioStore((s) => s.scenario);
   const loadScenario = useScenarioStore((s) => s.loadScenario);
@@ -21,7 +34,7 @@ export function PlanFileControls() {
 
   const handleExport = () => {
     if (!scenario) return;
-    exportScenarioToFile(scenario);
+    exportScenarioToFile(scenario, filenameForScenario(scenario.name));
   };
 
   const handleFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {

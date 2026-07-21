@@ -299,6 +299,14 @@ export interface IncomeDrainInstance<TConfig = unknown> {
 
 export interface Scenario {
   readonly schemaVersion: number;
+  /**
+   * A user-chosen label (SPEC.md §8's "a named, versioned set of inputs +
+   * assumptions") — purely descriptive, never read by the engine itself.
+   * Optional, like `projectionYears` below, so every existing `Scenario`
+   * value keeps typechecking without modification; the UI falls back to
+   * a placeholder wherever this is unset.
+   */
+  readonly name?: string;
   readonly household: Household;
   readonly accounts: readonly Account[];
   readonly incomeSources: readonly IncomeSourceInstance[];

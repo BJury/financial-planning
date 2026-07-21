@@ -230,6 +230,7 @@ function latestDrawdownTargetPhase(targets: readonly IncomeSourceInstance[]): In
 }
 
 interface OnboardingDrafts {
+  readonly name: string;
   readonly dateOfBirth: string;
   readonly statePensionAge: number;
   readonly inflationRate: number;
@@ -262,6 +263,7 @@ interface OnboardingDrafts {
 function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
   if (!scenario) {
     return {
+      name: "",
       dateOfBirth: "",
       statePensionAge: DEFAULT_STATE_PENSION_AGE,
       inflationRate: DEFAULT_INFLATION_RATE,
@@ -291,6 +293,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
     .sort((a, b) => a.config.startAge - b.config.startAge);
 
   return {
+    name: scenario.name ?? "",
     dateOfBirth: personA?.dateOfBirth ?? "",
     statePensionAge: personA?.statePensionAge ?? DEFAULT_STATE_PENSION_AGE,
     inflationRate: scenario.inflationRate,
@@ -380,6 +383,7 @@ export function Onboarding() {
   // previously-saved plan or genuinely null for a first-time visit.
   const [initial] = useState(() => draftsFromScenario(existingScenario));
 
+  const [planName, setPlanName] = useState(initial.name);
   const [dateOfBirth, setDateOfBirth] = useState(initial.dateOfBirth);
   const [statePensionAge, setStatePensionAge] = useState(initial.statePensionAge);
   const [inflationRate, setInflationRate] = useState(initial.inflationRate);
@@ -689,6 +693,7 @@ export function Onboarding() {
 
     return {
       schemaVersion: 1,
+      ...(planName.trim() ? { name: planName.trim() } : {}),
       household,
       accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities, ...propertyEntities],
       incomeSources: [...drawdownTargets, ...incomeSources],
@@ -709,6 +714,7 @@ export function Onboarding() {
     () => (canSubmit ? buildScenario() : null),
     [
       canSubmit,
+      planName,
       dateOfBirth,
       statePensionAge,
       inflationRate,
@@ -772,9 +778,16 @@ export function Onboarding() {
           <Group gap="sm">
             <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
             <Title order={3}>Can I Stop</Title>
-            <Text c="dimmed" size="sm" visibleFrom="xs">
-              Your plan
-            </Text>
+            {/* A real (optional) `Scenario.name`, editable right where the old static "Your plan" label used to sit — saved/autosaved like every other field, and used to suggest a filename on export. */}
+            <TextInput
+              aria-label="Plan name"
+              placeholder="Name your plan"
+              value={planName}
+              onChange={(e) => setPlanName(e.currentTarget.value)}
+              size="xs"
+              w={180}
+              visibleFrom="xs"
+            />
           </Group>
           <Group gap="xs">
             <PlanFileControls />
