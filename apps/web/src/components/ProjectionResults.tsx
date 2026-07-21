@@ -886,18 +886,50 @@ function ProjectionLineChart({
         </Center>
       ) : (
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 24 + Math.max(0, maxEventStackSize - 1) * 12, right: 20, bottom: 10, left: 10 }}>
+          {/* One more stacked "row" than the event labels alone need — reserved for the "Shortfall" label(s) below, which always sit one level above the tallest stack of event labels (never inside the plot area, where a "bottom" position previously got drawn over by the data line itself). */}
+          <LineChart
+            data={chartData}
+            margin={{ top: 24 + (maxEventStackSize + (shortfallRanges.length > 0 ? 1 : 0) - 1) * 12, right: 20, bottom: 10, left: 10 }}
+          >
             <CartesianGrid strokeDasharray="3 3" stroke={chartGridColor} />
-            {shortfallRanges.map((r) => (
-              <ReferenceArea
-                key={`shortfall:${r.start}`}
-                x1={axisValueByTaxYear.get(r.start) ?? r.start}
-                x2={axisValueByTaxYear.get(r.end) ?? r.end}
-                fill="#e03131"
-                fillOpacity={0.1}
-                ifOverflow="extendDomain"
-              />
-            ))}
+            {shortfallRanges.map((r) =>
+              // A `ReferenceArea` with x1 === x2 (a single-year shortfall)
+              // resolves to a zero-width rectangle on this category axis
+              // and never renders at all — a real bug a user hit ("if net
+              // income doesn't match the target for one year only, the
+              // graph doesn't show this at all"). A `ReferenceLine` has no
+              // width to collapse, so it stays visible regardless of how
+              // many years the shortfall spans.
+              // Labelled "Shortfall", pinned one stack level *above* the
+              // tallest stack of event labels (`maxEventStackSize * 12`) —
+              // a drawdown phase's own start/end events (pink, dashed)
+              // very often land on this exact same year, since a
+              // shortfall typically begins right when a phase starts, so
+              // sharing the same level would overlap them; a bottom
+              // position was tried first, but sits right where the data
+              // line itself is drawn (both near the low end of the axis),
+              // hiding the label behind the line.
+              r.start === r.end ? (
+                <ReferenceLine
+                  key={`shortfall:${r.start}`}
+                  x={axisValueByTaxYear.get(r.start) ?? r.start}
+                  stroke="#e03131"
+                  strokeWidth={3}
+                  ifOverflow="extendDomain"
+                  label={{ value: "Shortfall", position: "top", fill: "#e03131", fontSize: 10, offset: 8 + maxEventStackSize * 12 }}
+                />
+              ) : (
+                <ReferenceArea
+                  key={`shortfall:${r.start}`}
+                  x1={axisValueByTaxYear.get(r.start) ?? r.start}
+                  x2={axisValueByTaxYear.get(r.end) ?? r.end}
+                  fill="#e03131"
+                  fillOpacity={0.1}
+                  ifOverflow="extendDomain"
+                  label={{ value: "Shortfall", position: "top", fill: "#e03131", fontSize: 10, offset: 8 + maxEventStackSize * 12 }}
+                />
+              ),
+            )}
             <XAxis
               dataKey="axisValue"
               type="category"
@@ -1157,7 +1189,8 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       {(chartEvents.length > 0 || shortfallRanges.length > 0) && (
         <Text size="xs" c="dimmed">
           {chartEvents.length > 0 && "Dashed lines mark one-off events and when income sources or drawdown targets change. "}
-          {shortfallRanges.length > 0 && "Shaded red bands mark years a drawdown target isn't fully met."}
+          {shortfallRanges.length > 0 &&
+            "Shaded red bands (or a solid red line, for a single year) mark when a drawdown target isn't fully met."}
         </Text>
       )}
 
