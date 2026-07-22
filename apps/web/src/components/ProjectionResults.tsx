@@ -21,7 +21,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { downloadCsv, projectionToCsv } from "../csvExport.js";
-import { formatMoney } from "../format.js";
+import { formatMoney, formatMoneyRounded, formatNumber, formatPoundsMoney } from "../format.js";
 import { InfoTip } from "./InfoTip.js";
 import { computeNetWorth, computeProjection } from "../projection.js";
 import { GAP_ACCOUNT_KIND_LABELS, computeShortfallGaps, type ShortfallGap } from "../shortfallGap.js";
@@ -682,7 +682,7 @@ function buildChartEvents(scenario: Scenario, result: ProjectionResult): readonl
   for (const phase of drawdownPhases) {
     const config = phase.config;
     const suffix = people.length > 1 ? ` (${ownerLabel(phase.owner, people)})` : "";
-    const amountLabel = `£${penceToPounds(config.targetNetAnnualIncome).toLocaleString()}`;
+    const amountLabel = `£${formatNumber(penceToPounds(config.targetNetAnnualIncome))}`;
 
     const startTaxYear = ageToTaxYear(phase.owner, config.startAge);
     if (startTaxYear) {
@@ -822,7 +822,7 @@ function computeShortfallRanges(result: ProjectionResult): readonly ShortfallRan
 }
 
 function formatCurrencyTick(v: number): string {
-  return `£${v.toLocaleString()}`;
+  return `£${formatNumber(v)}`;
 }
 
 // The exact font both charts' Y-axis ticks render in (`CHART_TICK_STYLE`
@@ -986,12 +986,20 @@ function ProjectionLineChart({
               stroke={chartGridColor}
             />
             <Tooltip
-              formatter={(v: number) => `£${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+              formatter={(v: number) => formatMoneyRounded(v)}
               contentStyle={{ backgroundColor: isDark ? "#25262B" : "#fff", borderColor: chartGridColor, color: chartTextColor }}
             />
             <Legend wrapperStyle={{ color: chartTextColor }} />
             {visibleMetrics.map((m) => (
-              <Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} strokeWidth={2} />
+              // `isAnimationActive={false}` — Recharts otherwise animates
+              // the line being drawn in over ~1.5s by default, which means
+              // every edit (this component's `chartData` prop changing)
+              // keeps re-rendering the chart on every animation frame for
+              // that whole window, not just once. This showed up directly
+              // in profiling as the largest contributor to "adding/
+              // removing a card feels slow" — turning it off makes each
+              // update a single, immediate redraw instead.
+              <Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} strokeWidth={2} isAnimationActive={false} />
             ))}
             {stackedChartEvents.map((e) => (
               <ReferenceLine
@@ -1173,6 +1181,43 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   // palette and become close to unreadable against a dark background.
   const colorScheme = useComputedColorScheme("light");
 
+  // "axisValue" carries whatever the X-axis is currently keyed on (the tax
+  // year string, or a person's age that year) — a separate field from
+  // `taxYear`, which stays around unconditionally so events and shortfall
+  // bands (both only ever known by tax year) can still be looked up and
+  // translated onto whichever axis is currently showing.
+  //
+  // Memoized (and so hoisted above the early return below, per the Rules
+  // of Hooks) rather than plain consts recomputed on every render — this
+  // used to redo `allMetrics.map()` per table row (calling every metric's
+  // own `compute` closure) and a canvas `measureText` call on every single
+  // render of this component, including ones triggered by something this
+  // data doesn't even depend on (e.g. a dark-mode toggle, or any sidebar
+  // edit at all, since `ProjectionResults` re-renders whenever its parent
+  // does). That showed up directly in profiling as the dominant cost
+  // behind "adding/removing a card feels slow."
+  const people = scenario?.household.people ?? [];
+  const axisPerson = personForRowAxisMode(axisMode, people);
+  const chartData = useMemo(
+    () =>
+      result
+        ? result.rows.map((row) => ({
+            taxYear: row.taxYear,
+            axisValue: axisPerson ? ageAtYear(axisPerson.dateOfBirth, row.calendarYear) : row.taxYear,
+            ...Object.fromEntries(allMetrics.map((m) => [m.key, m.compute(row)])),
+          }))
+        : [],
+    [result, allMetrics, axisPerson],
+  );
+  const axisValueByTaxYear = useMemo(() => new Map(chartData.map((d) => [d.taxYear, d.axisValue])), [chartData]);
+  const selectedVisibleMetrics = useMemo(() => allMetrics.filter((m) => selectedMetrics.includes(m.key)), [allMetrics, selectedMetrics]);
+  const visibleBalanceMetrics = useMemo(() => selectedVisibleMetrics.filter((m) => m.scale === "balance"), [selectedVisibleMetrics]);
+  const visibleFlowMetrics = useMemo(() => selectedVisibleMetrics.filter((m) => m.scale === "flow"), [selectedVisibleMetrics]);
+  const sharedYAxisWidth = useMemo(
+    () => estimateSharedYAxisWidth(chartData, [visibleBalanceMetrics, visibleFlowMetrics]),
+    [chartData, visibleBalanceMetrics, visibleFlowMetrics],
+  );
+
   if (!scenario || !result) {
     return (
       <Center h="100%" mih={400}>
@@ -1184,23 +1229,6 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
   const isDark = colorScheme === "dark";
   const chartTextColor = isDark ? "#C1C2C5" : "#495057";
   const chartGridColor = isDark ? "#373A40" : "#e9ecef";
-  const { people } = scenario.household;
-  const axisPerson = personForRowAxisMode(axisMode, people);
-  // "axisValue" carries whatever the X-axis is currently keyed on (the
-  // tax year string, or a person's age that year) — a separate field
-  // from `taxYear`, which stays around unconditionally so events and
-  // shortfall bands (both only ever known by tax year) can still be
-  // looked up and translated onto whichever axis is currently showing.
-  const chartData = result.rows.map((row) => ({
-    taxYear: row.taxYear,
-    axisValue: axisPerson ? ageAtYear(axisPerson.dateOfBirth, row.calendarYear) : row.taxYear,
-    ...Object.fromEntries(allMetrics.map((m) => [m.key, m.compute(row)])),
-  }));
-  const axisValueByTaxYear = new Map(chartData.map((d) => [d.taxYear, d.axisValue]));
-  const selectedVisibleMetrics = allMetrics.filter((m) => selectedMetrics.includes(m.key));
-  const visibleBalanceMetrics = selectedVisibleMetrics.filter((m) => m.scale === "balance");
-  const visibleFlowMetrics = selectedVisibleMetrics.filter((m) => m.scale === "flow");
-  const sharedYAxisWidth = estimateSharedYAxisWidth(chartData, [visibleBalanceMetrics, visibleFlowMetrics]);
 
   return (
     <Stack gap="xl">
@@ -1321,7 +1349,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
             {shortfallGaps.map((gap) => (
               <Text key={gap.kind} size="sm">
                 {gap.extraNeeded !== undefined
-                  ? `£${penceToPounds(gap.extraNeeded).toLocaleString(undefined, { maximumFractionDigits: 0 })} more in your ${GAP_ACCOUNT_KIND_LABELS[gap.kind]} would have avoided every shortfall in this plan.`
+                  ? `${formatMoneyRounded(penceToPounds(gap.extraNeeded))} more in your ${GAP_ACCOUNT_KIND_LABELS[gap.kind]} would have avoided every shortfall in this plan.`
                   : `Extra ${GAP_ACCOUNT_KIND_LABELS[gap.kind]} savings alone wouldn't have helped — ${gap.unfixableReason}.`}
               </Text>
             ))}
@@ -1418,12 +1446,12 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
                   <Table.Td>{rowAxisLabel(row, axisMode, people)}</Table.Td>
                   {pensionBalanceMetrics.map((m) => (
                     <Table.Td key={m.key} bg="var(--mantine-color-teal-light)" ta="right">
-                      £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {formatPoundsMoney(m.compute(row))}
                     </Table.Td>
                   ))}
                   {nonTaxableBalanceMetrics.map((m) => (
                     <Table.Td key={m.key} bg="var(--mantine-color-cyan-light)" ta="right">
-                      £{m.compute(row).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {formatPoundsMoney(m.compute(row))}
                     </Table.Td>
                   ))}
                   {visibleColumnGroups.flatMap((group) =>

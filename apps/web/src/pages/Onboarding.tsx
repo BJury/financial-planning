@@ -37,6 +37,7 @@ import { InfoTip } from "../components/InfoTip.js";
 import { PlanFileControls } from "../components/PlanFileControls.js";
 import { ProjectionResults } from "../components/ProjectionResults.js";
 import { QuickStartWizard, type QuickStartAnswers } from "../components/QuickStartWizard.js";
+import { formatNumber } from "../format.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
@@ -2015,9 +2016,9 @@ function PropertyAccountCard({
                 label="Pay proceeds into (optional)"
                 description="Leave blank for the default — just ordinary spendable income for that year"
                 data={[
-                  ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })),
-                  ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })),
-                  ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })),
+                  ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${formatNumber(a.currentBalance)})` })),
+                  ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${formatNumber(a.currentBalance)})` })),
+                  ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${formatNumber(a.currentBalance)})` })),
                 ]}
                 value={property.destinationAccountId ?? null}
                 onChange={(v) => onChange({ ...property, destinationAccountId: v ?? undefined })}
@@ -2093,21 +2094,21 @@ function CatalogInstanceCard({
   const fields = definition.fields
     .map((field) => {
       if (field.key === "pensionAccountId") {
-        return { ...field, options: pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${a.currentBalance.toLocaleString()})` })) };
+        return { ...field, options: pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${formatNumber(a.currentBalance)})` })) };
       }
       if (field.key === "isaAccountId") {
-        return { ...field, options: isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })) };
+        return { ...field, options: isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${formatNumber(a.currentBalance)})` })) };
       }
       if (field.key === "giaAccountId") {
-        return { ...field, options: giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })) };
+        return { ...field, options: giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${formatNumber(a.currentBalance)})` })) };
       }
       if (field.key === "cashAccountId") {
-        return { ...field, options: cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })) };
+        return { ...field, options: cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${formatNumber(a.currentBalance)})` })) };
       }
       if (field.key === "propertyId") {
         // Mortgage payments can be linked to any property; rental income only to a rental one.
         const options = instance.type === "rentalIncome" ? rentalProperties : properties;
-        return { ...field, options: options.map((a) => ({ value: a.id, label: `${a.propertyType === "rental" ? "Rental" : "Main residence"} (£${a.currentBalance.toLocaleString()})` })) };
+        return { ...field, options: options.map((a) => ({ value: a.id, label: `${a.propertyType === "rental" ? "Rental" : "Main residence"} (£${formatNumber(a.currentBalance)})` })) };
       }
       if (field.key === "destinationAccountId") {
         // A one-off inflow's optional (or general cash income's
@@ -2120,11 +2121,11 @@ function CatalogInstanceCard({
         return {
           ...field,
           options: [
-            ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${a.currentBalance.toLocaleString()})` })),
-            ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${a.currentBalance.toLocaleString()})` })),
-            ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${a.currentBalance.toLocaleString()})` })),
+            ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${formatNumber(a.currentBalance)})` })),
+            ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${formatNumber(a.currentBalance)})` })),
+            ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${formatNumber(a.currentBalance)})` })),
             ...(instance.type === "generalCashIncome"
-              ? pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${a.currentBalance.toLocaleString()})` }))
+              ? pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${formatNumber(a.currentBalance)})` }))
               : []),
           ],
         };
