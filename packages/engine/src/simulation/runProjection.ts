@@ -125,12 +125,21 @@ export interface PersonYearResult {
    * included, at the amount that actually left their own take-home pay —
    * a relief-at-source contribution's basic-rate top-up isn't their own
    * money, so isn't counted here even though it's credited to the
-   * account too). Subtracted from `netIncome` for the same reason
-   * `otherExpenses` is: it's money the person explicitly directed
-   * elsewhere this year, not left over for the automatic surplus sweep
-   * to *also* invest.
+   * account too). Unlike `otherExpenses`, this is *not* subtracted from
+   * `netIncome` — a contribution is treated as new money arriving from
+   * outside the plan's own tracked income (the same assumption an
+   * employer pension contribution already made), not a diversion of
+   * money already counted as earned.
    */
   readonly accountContributions: Pence;
+  /** Of `accountContributions`, the pension-bound share only — every relief method combined, at the amount that actually left this person's own take-home pay (not the relief-at-source top-up, same exclusion as `accountContributions` itself). */
+  readonly pensionContributions: Pence;
+  /** Of `accountContributions`, the ISA-bound share only. */
+  readonly isaContributions: Pence;
+  /** Of `accountContributions`, the GIA-bound share only. */
+  readonly giaContributions: Pence;
+  /** Of `accountContributions`, the cash-bound share only. */
+  readonly cashContributions: Pence;
   /** Total gross withdrawn this year to fund any active drawdown target(s) — pension + ISA + cash + GIA combined (SPEC.md §5.7). */
   readonly drawdownGrossWithdrawn: Pence;
   /** Of `drawdownGrossWithdrawn`, how much came specifically from a pension — the taxable side of the taxable/non-taxable drawdown preference (`drawdown/solveDrawdown.ts`'s `taxablePreferenceAmount`). */
@@ -183,13 +192,14 @@ export interface PersonYearResult {
   /** Earned-income net plus any drawdown net achieved — the person's total spendable cash for the year. */
   readonly netIncome: Pence;
   /**
-   * Any positive `netIncome` not otherwise directed by a contribution
-   * drain. Deliberately *not* auto-invested anywhere — a prior version of
+   * Any positive `netIncome` — no longer reduced by a contribution
+   * either, since `accountContributions` isn't part of `netIncome`
+   * above. Deliberately *not* auto-invested anywhere — a prior version of
    * this engine swept it into an ISA/GIA automatically, which the user
    * found opaque (money moving into an account they never told the
    * planner to fund). Surfaced here purely for visibility, so the user
    * can see how much was left over each year and decide for themselves
-   * whether to add a contribution drain to capture it.
+   * whether to add a contribution to capture it.
    */
   readonly unallocatedSurplus: Pence;
   /**
@@ -257,6 +267,10 @@ interface Pass1Result {
   readonly pensionInputAmount: Pence;
   readonly otherExpenses: Pence;
   readonly accountContributions: Pence;
+  readonly pensionContributions: Pence;
+  readonly isaContributions: Pence;
+  readonly giaContributions: Pence;
+  readonly cashContributions: Pence;
   readonly isaContributionsThisYear: Pence;
   readonly taxableIncome: Pence;
   /** The standard rate bands (excluding the Personal Allowance), already widened for any relief-at-source contribution — SPEC.md §5.4. */
@@ -640,6 +654,14 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       let pensionInputAmount = zeroPence(); // every method's gross contribution, plus employer contributions below — the Annual Allowance figure
       let otherExpenses = zeroPence(); // living expenses, one-off outflows — reduce spendable cash, not taxable income
       let accountContributions = zeroPence(); // pension/ISA/GIA/cash contributions, at the amount that left this person's own pocket — reduce spendable cash for the same reason otherExpenses does (SPEC.md §5.1 step 6/7): money already explicitly directed elsewhere, not left over for the automatic surplus sweep to also invest
+      // The same total, broken out by which account kind it was bound
+      // for — each always sums back to `accountContributions` by
+      // construction, since every branch below that adds to one of these
+      // also adds the identical amount to `accountContributions`.
+      let pensionContributions = zeroPence();
+      let isaContributions = zeroPence();
+      let giaContributions = zeroPence();
+      let cashContributions = zeroPence();
       // Seeded from whatever a destination-directed one-off inflow already
       // used this year (household pre-pass above) — the annual ISA
       // subscription limit is one shared pool across that, a manual ISA
@@ -666,6 +688,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           // government's money, not theirs, even though both are credited
           // to the account together.
           accountContributions = addPence(accountContributions, drainResult.amount);
+          pensionContributions = addPence(pensionContributions, drainResult.amount);
 
           const { pensionAccountId } = drain.config as PensionContributionConfig;
           const currentBalance = nextAccountBalances.get(pensionAccountId) ?? zeroPence();
@@ -674,6 +697,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           taxableIncomeReduction = addPence(taxableIncomeReduction, drainResult.amount);
           pensionInputAmount = addPence(pensionInputAmount, drainResult.amount);
           accountContributions = addPence(accountContributions, drainResult.amount);
+          pensionContributions = addPence(pensionContributions, drainResult.amount);
 
           const { pensionAccountId } = drain.config as PensionContributionConfig;
           const currentBalance = nextAccountBalances.get(pensionAccountId) ?? zeroPence();
@@ -683,6 +707,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           salarySacrificeAmount = addPence(salarySacrificeAmount, drainResult.amount);
           pensionInputAmount = addPence(pensionInputAmount, drainResult.amount);
           accountContributions = addPence(accountContributions, drainResult.amount);
+          pensionContributions = addPence(pensionContributions, drainResult.amount);
 
           const { pensionAccountId } = drain.config as PensionContributionConfig;
           const currentBalance = nextAccountBalances.get(pensionAccountId) ?? zeroPence();
@@ -693,6 +718,7 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           nextAccountBalances.set(isaAccountId, addPence(currentBalance, drainResult.amount));
           isaContributionsThisYear = addPence(isaContributionsThisYear, drainResult.amount);
           accountContributions = addPence(accountContributions, drainResult.amount);
+          isaContributions = addPence(isaContributions, drainResult.amount);
         } else if (drain.type === "giaContribution") {
           const { giaAccountId } = drain.config as GiaContributionConfig;
           const currentBalance = nextAccountBalances.get(giaAccountId) ?? zeroPence();
@@ -701,11 +727,13 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           const currentCostBasis = nextCostBasisByAccountId.get(giaAccountId) ?? zeroPence();
           nextCostBasisByAccountId.set(giaAccountId, addPence(currentCostBasis, drainResult.amount));
           accountContributions = addPence(accountContributions, drainResult.amount);
+          giaContributions = addPence(giaContributions, drainResult.amount);
         } else if (drain.type === "cashContribution") {
           const { cashAccountId } = drain.config as CashContributionConfig;
           const currentBalance = nextAccountBalances.get(cashAccountId) ?? zeroPence();
           nextAccountBalances.set(cashAccountId, addPence(currentBalance, drainResult.amount));
           accountContributions = addPence(accountContributions, drainResult.amount);
+          cashContributions = addPence(cashContributions, drainResult.amount);
         } else {
           // Living expenses, one-off outflows, and any other drain with no
           // account to credit and no tax effect (SPEC.md §5.1 step 6) —
@@ -773,6 +801,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         pensionInputAmount,
         otherExpenses,
         accountContributions,
+        pensionContributions,
+        isaContributions,
+        giaContributions,
+        cashContributions,
         isaContributionsThisYear,
         taxableIncome,
         extendedBands,
@@ -1405,11 +1437,16 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
       // (step 3 already folded rental profit's *tax* into `incomeTax`
       // above); property sale net proceeds are already net of any CGT
       // due, mirroring how `taxFreeIncome` adds in with no further tax
-      // effect (SPEC.md §3.8). `accountContributions` is subtracted here
-      // too — a pension/ISA/GIA/cash contribution drain already directed
-      // that money into an account, so it must come off spendable cash
-      // the same way `otherExpenses` does, or the surplus sweep below
-      // would treat it as still-unallocated and invest it a second time.
+      // effect (SPEC.md §3.8). `accountContributions` is deliberately
+      // *not* subtracted here, unlike `otherExpenses` — a pension/ISA/
+      // GIA/cash contribution drain is treated as new money arriving from
+      // outside the plan's own tracked income (the same assumption an
+      // employer pension contribution already made) and going straight
+      // into an account, not a diversion of money this person is also
+      // shown as having earned. This also sidesteps a false shortfall a
+      // contribution could otherwise manufacture for a household whose
+      // income isn't fully modelled (e.g. a Quick-Start-created plan with
+      // no Salary source at all).
       // A drawdown target represents total desired income, and achieving
       // it is automatically treated as spent — otherwise it would just
       // sit as unswept surplus unless the user separately configured a
@@ -1440,21 +1477,23 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
           nationalInsurance,
           annualAllowanceCharge,
           pass1.otherExpenses,
-          pass1.accountContributions,
           savingsTax,
           dividendTax,
           autoConsumption,
         ]),
       );
 
-      // 6c. Surplus visibility: any positive net income not otherwise
-      //     directed by a contribution drain is *not* automatically
-      //     invested anywhere — a prior version of this engine swept it
-      //     into an ISA then a GIA on the user's behalf, which was opaque
-      //     (a balance changing that the user never told the planner to
-      //     fund). It's simply surfaced as `unallocatedSurplus` so the
-      //     user can see it and decide for themselves whether to add a
-      //     contribution drain to actually capture it.
+      // 6c. Surplus visibility: any positive net income is *not*
+      //     automatically invested anywhere — a prior version of this
+      //     engine swept it into an ISA then a GIA on the user's behalf,
+      //     which was opaque (a balance changing that the user never told
+      //     the planner to fund). It's simply surfaced as
+      //     `unallocatedSurplus` so the user can see it and decide for
+      //     themselves whether to add a contribution to actually capture
+      //     it — this is no longer reduced by a contribution already
+      //     added either (`accountContributions` isn't part of
+      //     `netIncome` above), since a contribution is treated as its
+      //     own separate inflow, not a claim on this figure.
       const unallocatedSurplus = maxPence(netIncome, zeroPence());
 
       // 6d. If net income is negative (outgoings exceeded income this
@@ -1551,6 +1590,10 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
         nationalInsurance,
         otherExpenses: pass1.otherExpenses,
         accountContributions: pass1.accountContributions,
+        pensionContributions: pass1.pensionContributions,
+        isaContributions: pass1.isaContributions,
+        giaContributions: pass1.giaContributions,
+        cashContributions: pass1.cashContributions,
         drawdownGrossWithdrawn,
         drawdownFromPension,
         drawdownFromIsa,

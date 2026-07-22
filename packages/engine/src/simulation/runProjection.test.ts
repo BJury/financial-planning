@@ -112,10 +112,11 @@ describe("runProjection — golden-file scenario: £70,000 salary + relief-at-so
     //   Total NI: £3,016.00 + £394.60 = £3,410.60 = 341,060p
     expect(personResult?.nationalInsurance).toBe(poundsToPence(3410.6));
 
-    // Net income: £70,000 - £14,432.00 - £3,410.60 - £4,000 (RAS pension, the
-    // amount actually paid, not the £5,000 grossed-up figure — the basic-rate
-    // top-up isn't the person's own money) - £5,000 (ISA contribution) = £43,157.40
-    expect(personResult?.netIncome).toBe(poundsToPence(43157.4));
+    // Net income: £70,000 - £14,432.00 - £3,410.60 = £52,157.40 — the
+    // £4,000 RAS pension and £5,000 ISA contributions are *not* subtracted
+    // here (unlike `otherExpenses`), since a contribution is treated as
+    // money arriving from outside the plan's own tracked income.
+    expect(personResult?.netIncome).toBe(poundsToPence(52157.4));
   });
 
   it("breaks down year 0's Income Tax band-by-band, exactly matching the hand-verified total above", () => {
@@ -147,13 +148,13 @@ describe("runProjection — golden-file scenario: £70,000 salary + relief-at-so
     const result = runProjection(makeGoldenScenario(), ruleSet2026_27, 1);
     const year0 = result.rows[0];
     // £2,000 start + £5,000 contribution = £7,000, grown at 4% = £7,280.00.
-    // Net income (£43,157.40, see the Income Tax test above — already net
-    // of both the £4,000 pension and £5,000 ISA contributions) is *not*
+    // Net income (£52,157.40, see the Income Tax test above — not reduced
+    // by either the £4,000 pension or £5,000 ISA contribution) is *not*
     // automatically swept into the ISA's remaining subscription room —
     // it stays visible as `unallocatedSurplus` on the person result
     // instead (SPEC.md §5.1 step 7).
     expect(year0?.accountBalances.get("isa1")).toBe(poundsToPence(7280));
-    expect(result.rows[0]?.perPerson[0]?.unallocatedSurplus).toBe(poundsToPence(43157.4));
+    expect(result.rows[0]?.perPerson[0]?.unallocatedSurplus).toBe(poundsToPence(52157.4));
   });
 
   it("produces identical Income Tax and NI every year when salary and thresholds are both flat in real terms", () => {
@@ -1361,17 +1362,10 @@ describe("runProjection — GIA and cash accounts", () => {
         },
       ],
       // £5,000 salary, comfortably under the Personal Allowance and NI
-      // threshold (zero tax, zero NI), so net income before the
-      // contribution is exactly £5,000 — enough to afford the £5,000 GIA
-      // contribution with nothing left over. This isolates the
-      // contribution-crediting mechanic under test here from *both*
-      // directions money can otherwise move based on net income: a
-      // surplus (with no salary at all, the contribution would be
-      // unaffordable, and the resulting shortfall would immediately draw
-      // the same amount straight back out of this same GIA — see the
-      // "shortfall funding" describe block for that interaction tested on
-      // its own terms) and a leftover surplus sweep (which, with no ISA
-      // in this scenario, would otherwise also land in this same GIA).
+      // threshold (zero tax, zero NI) — a contribution is never subtracted
+      // from netIncome (treated as arriving from outside the plan's own
+      // tracked income), so this salary is only here to keep netIncome a
+      // clean, easily hand-verified figure, not to "afford" the contribution.
       incomeSources: [{ id: "src1", type: "salary", owner: PERSON_ID, config: { grossAnnualSalary: poundsToPence(5000), annualGrowthRate: 0 } }],
       incomeDrains: [
         {
@@ -1390,8 +1384,8 @@ describe("runProjection — GIA and cash accounts", () => {
     expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(15000));
     // Cost basis increases by the same amount — it's new money invested, not a gain.
     expect(result.rows[0]?.costBasisByAccountId.get("gia1")).toBe(poundsToPence(15000));
-    // Net income lands at exactly zero — the salary exactly covered the contribution, nothing more.
-    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(0);
+    // Net income is simply the untaxed £5,000 salary — the contribution doesn't reduce it.
+    expect(result.rows[0]?.perPerson[0]?.netIncome).toBe(poundsToPence(5000));
   });
 });
 
@@ -1470,7 +1464,7 @@ describe("runProjection — unallocated surplus (no automatic reinvesting)", () 
     expect(row?.costBasisByAccountId.get("gia1")).toBe(0);
   });
 
-  it("an existing manual ISA contribution still reduces netIncome/unallocatedSurplus (as an accountContribution), independent of any sweep", () => {
+  it("an existing manual ISA contribution doesn't reduce netIncome/unallocatedSurplus, independent of any sweep", () => {
     const manualContribution = 15000;
     const withContribution = runProjection(
       makeSweepScenario({ grossAnnualSalary: 80000, hasIsa: true, isaContribution: manualContribution }),
@@ -1481,7 +1475,10 @@ describe("runProjection — unallocated surplus (no automatic reinvesting)", () 
 
     const withResult = withContribution.rows[0]?.perPerson[0];
     const withoutResult = withoutContribution.rows[0]?.perPerson[0];
-    expect(withResult?.unallocatedSurplus).toBe(pence((withoutResult?.unallocatedSurplus ?? 0) - poundsToPence(manualContribution)));
+    // Unaffected either way — a contribution is treated as money arriving
+    // from outside the plan's own tracked income, so it neither reduces
+    // unallocatedSurplus nor "swaps" it for account balance.
+    expect(withResult?.unallocatedSurplus).toBe(withoutResult?.unallocatedSurplus);
     expect(withContribution.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(manualContribution));
   });
 
@@ -2670,7 +2667,7 @@ describe("runProjection — shortfall funding (outgoings exceeding income, SPEC.
   });
 });
 
-describe("runProjection — account contributions reduce net income (and only the contribution itself is credited)", () => {
+describe("runProjection — account contributions don't reduce net income (only the contribution itself is credited)", () => {
   const CONTRIB_PERSON_ID = personId("c1");
   const contribPerson: Person = { id: CONTRIB_PERSON_ID, dateOfBirth: "1980-01-01", targetRetirementAge: 67, projectionEndAge: 95 };
   const contribHousehold: Household = { people: [contribPerson], relationshipStatus: null, targetIncomeMode: "perPerson" };
@@ -2694,55 +2691,63 @@ describe("runProjection — account contributions reduce net income (and only th
 
   const PRE_CONTRIBUTION_NET_INCOME = poundsToPence(17919.6);
 
-  it("an ISA contribution reduces netIncome by the amount contributed, and only that amount is credited", () => {
+  it("an ISA contribution doesn't reduce netIncome, and only the contributed amount is credited", () => {
     const isa: Account = { kind: "isa", id: "isa1", owner: CONTRIB_PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(0), annualGrowthRate: 0 };
     const drain: IncomeDrainInstance = { id: "isaC1", type: "isaContribution", owner: CONTRIB_PERSON_ID, config: { isaAccountId: "isa1", annualContribution: poundsToPence(5000) } };
     const result = runProjection(makeContribScenario([isa], [drain]), ruleSet2026_27, 1);
     const p = result.rows[0]?.perPerson[0];
 
     expect(p?.accountContributions).toBe(poundsToPence(5000));
-    expect(p?.netIncome).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
-    // Only the £5,000 contribution itself is credited — the remaining
-    // (already-reduced) net income is not automatically invested too.
+    expect(p?.isaContributions).toBe(poundsToPence(5000));
+    expect(p?.pensionContributions).toBe(zeroPence());
+    expect(p?.giaContributions).toBe(zeroPence());
+    expect(p?.cashContributions).toBe(zeroPence());
+    // Treated as new money arriving from outside the plan's own tracked
+    // income, so netIncome/unallocatedSurplus are unaffected — only the
+    // account balance itself moves.
+    expect(p?.netIncome).toBe(PRE_CONTRIBUTION_NET_INCOME);
     expect(result.rows[0]?.accountBalances.get("isa1")).toBe(poundsToPence(5000));
-    expect(p?.unallocatedSurplus).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
+    expect(p?.unallocatedSurplus).toBe(PRE_CONTRIBUTION_NET_INCOME);
   });
 
-  it("a GIA contribution reduces netIncome, and only that amount is credited", () => {
+  it("a GIA contribution doesn't reduce netIncome, and only the contributed amount is credited", () => {
     const gia: Account = { kind: "gia", id: "gia1", owner: CONTRIB_PERSON_ID, currentBalance: poundsToPence(0), costBasis: poundsToPence(0), annualGrowthRate: 0, annualDividendYield: 0 };
     const drain: IncomeDrainInstance = { id: "giaC1", type: "giaContribution", owner: CONTRIB_PERSON_ID, config: { giaAccountId: "gia1", annualContribution: poundsToPence(5000) } };
     const result = runProjection(makeContribScenario([gia], [drain]), ruleSet2026_27, 1);
     const p = result.rows[0]?.perPerson[0];
 
-    expect(p?.netIncome).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
+    expect(p?.netIncome).toBe(PRE_CONTRIBUTION_NET_INCOME);
+    expect(p?.giaContributions).toBe(poundsToPence(5000));
     // Only the £5,000 contribution itself is credited to the GIA.
     expect(result.rows[0]?.accountBalances.get("gia1")).toBe(poundsToPence(5000));
-    expect(p?.unallocatedSurplus).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
+    expect(p?.unallocatedSurplus).toBe(PRE_CONTRIBUTION_NET_INCOME);
   });
 
-  it("a cash contribution reduces netIncome", () => {
+  it("a cash contribution doesn't reduce netIncome", () => {
     const cash: Account = { kind: "cash", id: "cash1", owner: CONTRIB_PERSON_ID, currentBalance: poundsToPence(0), annualGrowthRate: 0 };
     const drain: IncomeDrainInstance = { id: "cashC1", type: "cashContribution", owner: CONTRIB_PERSON_ID, config: { cashAccountId: "cash1", annualContribution: poundsToPence(5000) } };
     const result = runProjection(makeContribScenario([cash], [drain]), ruleSet2026_27, 1);
     const p = result.rows[0]?.perPerson[0];
 
     expect(p?.accountContributions).toBe(poundsToPence(5000));
-    expect(p?.netIncome).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(5000)));
+    expect(p?.cashContributions).toBe(poundsToPence(5000));
+    expect(p?.netIncome).toBe(PRE_CONTRIBUTION_NET_INCOME);
   });
 
-  it("a relief-at-source pension contribution reduces netIncome by what the person actually paid, not the grossed-up top-up", () => {
+  it("a relief-at-source pension contribution doesn't reduce netIncome, even by what the person themselves paid", () => {
     const pension: Account = { kind: "pension", id: "pension1", owner: CONTRIB_PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(0), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() };
     const drain: IncomeDrainInstance = { id: "pen1", type: "pensionContribution", owner: CONTRIB_PERSON_ID, config: { pensionAccountId: "pension1", reliefMethod: "reliefAtSource", annualContribution: poundsToPence(4000) } };
     const result = runProjection(makeContribScenario([pension], [drain]), ruleSet2026_27, 1);
     const p = result.rows[0]?.perPerson[0];
 
-    // £4,000 grossed up at basic rate (20%) = £5,000 credited to the pension, but only the £4,000 the person themselves paid reduces their own spendable cash.
+    // £4,000 grossed up at basic rate (20%) = £5,000 credited to the pension — netIncome is untouched either way.
     expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(5000));
     expect(p?.accountContributions).toBe(poundsToPence(4000));
-    expect(p?.netIncome).toBe(subtractPence(PRE_CONTRIBUTION_NET_INCOME, poundsToPence(4000)));
+    expect(p?.pensionContributions).toBe(poundsToPence(4000));
+    expect(p?.netIncome).toBe(PRE_CONTRIBUTION_NET_INCOME);
   });
 
-  it("a net-pay pension contribution reduces netIncome by the full contribution amount", () => {
+  it("a net-pay pension contribution doesn't reduce netIncome beyond its own tax/NI saving", () => {
     const pension: Account = { kind: "pension", id: "pension1", owner: CONTRIB_PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(0), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() };
     const drain: IncomeDrainInstance = { id: "pen1", type: "pensionContribution", owner: CONTRIB_PERSON_ID, config: { pensionAccountId: "pension1", reliefMethod: "netPay", annualContribution: poundsToPence(4000) } };
     const result = runProjection(makeContribScenario([pension], [drain]), ruleSet2026_27, 1);
@@ -2750,12 +2755,13 @@ describe("runProjection — account contributions reduce net income (and only th
 
     expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(4000));
     expect(p?.accountContributions).toBe(poundsToPence(4000));
-    // Net-pay relief reduces taxable income too, so netIncome isn't simply the flat £20,000 scenario's figure minus £4,000 — it also reflects the resulting tax saving. Verified against the person's own actual tax/NI here rather than a second hand-derivation.
-    const expected = subtractPence(subtractPence(subtractPence(poundsToPence(20000), p?.incomeTax ?? zeroPence()), p?.nationalInsurance ?? zeroPence()), poundsToPence(4000));
+    expect(p?.pensionContributions).toBe(poundsToPence(4000));
+    // Net-pay relief reduces taxable income, so netIncome isn't simply the flat £20,000 scenario's own figure — it reflects the resulting tax/NI saving, but (unlike before) isn't *also* reduced by the £4,000 contribution itself. Verified against the person's own actual tax/NI here rather than a second hand-derivation.
+    const expected = subtractPence(subtractPence(poundsToPence(20000), p?.incomeTax ?? zeroPence()), p?.nationalInsurance ?? zeroPence());
     expect(p?.netIncome).toBe(expected);
   });
 
-  it("a salary-sacrifice pension contribution reduces netIncome by the full contribution amount", () => {
+  it("a salary-sacrifice pension contribution doesn't reduce netIncome beyond its own tax/NI saving", () => {
     const pension: Account = { kind: "pension", id: "pension1", owner: CONTRIB_PERSON_ID, pensionType: "sipp", currentBalance: poundsToPence(0), annualGrowthRate: 0, annualChargeRate: 0, employerAnnualContribution: zeroPence() };
     const drain: IncomeDrainInstance = { id: "pen1", type: "pensionContribution", owner: CONTRIB_PERSON_ID, config: { pensionAccountId: "pension1", reliefMethod: "salarySacrifice", annualContribution: poundsToPence(4000) } };
     const result = runProjection(makeContribScenario([pension], [drain]), ruleSet2026_27, 1);
@@ -2763,7 +2769,8 @@ describe("runProjection — account contributions reduce net income (and only th
 
     expect(result.rows[0]?.accountBalances.get("pension1")).toBe(poundsToPence(4000));
     expect(p?.accountContributions).toBe(poundsToPence(4000));
-    const expected = subtractPence(subtractPence(subtractPence(poundsToPence(20000), p?.incomeTax ?? zeroPence()), p?.nationalInsurance ?? zeroPence()), poundsToPence(4000));
+    expect(p?.pensionContributions).toBe(poundsToPence(4000));
+    const expected = subtractPence(subtractPence(poundsToPence(20000), p?.incomeTax ?? zeroPence()), p?.nationalInsurance ?? zeroPence());
     expect(p?.netIncome).toBe(expected);
   });
 });

@@ -385,16 +385,16 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
           )}
           {person.accountContributions > 0 && (
             <KeyValue
-              label="Pension/ISA/GIA/cash contributions from your own pocket"
+              label="Pension/ISA/GIA/cash contributions"
               amount={person.accountContributions}
-              info="What you personally paid in — a relief-at-source pension's basic-rate top-up isn't counted, since that's not your own money."
+              info="Credited to the account shown, but not subtracted from Net income below — a contribution is treated as money arriving from outside this plan's own tracked income, the same assumption an employer pension contribution already makes. A relief-at-source pension's basic-rate top-up isn't counted here either, since that's a further amount on top from the government, not from any pocket at all."
             />
           )}
           {person.unallocatedSurplus > 0 && (
             <KeyValue
               label="Unallocated surplus"
               amount={person.unallocatedSurplus}
-              info="Left over after tax, spending, and contributions — not automatically invested anywhere. Add a contribution drain if you'd like to capture it."
+              info="Left over after tax and spending — not automatically invested anywhere. Add a contribution if you'd like to capture it. Not reduced by any contribution already added, since a contribution is separate, untracked-source money rather than a claim on this figure."
             />
           )}
           {person.shortfallFundedFromSavings > 0 && (

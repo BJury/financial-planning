@@ -25,7 +25,7 @@ import {
   type Scenario,
   type TargetDrawdownIncomeConfig,
 } from "@fp/engine";
-import { ActionIcon, AppShell, Burger, Button, Card, Group, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
+import { ActionIcon, AppShell, Burger, Button, Card, Group, Menu, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { useEffect, useMemo, useState } from "react";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
@@ -56,6 +56,16 @@ const DEFAULT_TARGET_RETIREMENT_AGE = 67;
 // accounts keep their own separate 0% default, since a cash-like account
 // tracking equity market returns would be a misleading starting point.
 const DEFAULT_EQUITY_NOMINAL_GROWTH_RATE = 0.085;
+
+/**
+ * The four Income Drain types that credit an account rather than genuinely
+ * leaving the household (SPEC.md §9.4 still models them as drains under
+ * the hood — same registry, same `calculateForYear`/tax-treatment
+ * machinery — but a "Contributions" section reads far better to a user
+ * than lumping them in with living expenses/mortgage/one-off outflows
+ * under "Outgoings", since the money isn't spent, just moved).
+ */
+const CONTRIBUTION_DRAIN_TYPES = ["pensionContribution", "isaContribution", "giaContribution", "cashContribution"];
 
 // A random, collision-proof id rather than a sequential counter — this
 // page can be re-entered with an *existing* Scenario already loaded
@@ -739,6 +749,20 @@ export function Onboarding() {
     if (liveScenario) setScenario(liveScenario);
   }, [liveScenario, setScenario]);
 
+  // `ProjectionResults` recomputes a full engine run plus two Recharts
+  // charts and a many-row table on every render — cheap once, but doing
+  // that synchronously on every single keystroke (since `liveScenario`
+  // gets a new object identity on every edit) made typing anywhere in
+  // the sidebar feel laggy. `liveScenario` itself stays synchronous —
+  // every field still reflects what you actually typed instantly — only
+  // the results pane now lags a beat behind, debounced the same way
+  // `shortfallGap.ts`'s own expensive recompute already is.
+  const [debouncedScenario, setDebouncedScenario] = useState(liveScenario);
+  useEffect(() => {
+    const timeout = setTimeout(() => setDebouncedScenario(liveScenario), 300);
+    return () => clearTimeout(timeout);
+  }, [liveScenario]);
+
   // What QuickStartWizard starts pre-filled with — always read from
   // current live state (never "was this still at its untouched default"),
   // so it naturally shows £0/blank for a fresh plan and whatever's
@@ -765,6 +789,9 @@ export function Onboarding() {
     gia: { balance: firstGia?.currentBalance ?? 0, annualContribution: quickStartContributionFor(firstGia?.id) },
     cash: { balance: firstCash?.currentBalance ?? 0, annualContribution: quickStartContributionFor(firstCash?.id) },
   };
+
+  const outgoingDrains = incomeDrains.filter((d) => !CONTRIBUTION_DRAIN_TYPES.includes(d.type));
+  const contributionDrains = incomeDrains.filter((d) => CONTRIBUTION_DRAIN_TYPES.includes(d.type));
 
   return (
     <>
@@ -1009,103 +1036,129 @@ export function Onboarding() {
           />
         ))}
 
-        <Group>
-          <Button
-            variant="light"
-            onClick={() =>
-              setPensionAccounts((prev) => [
-                ...prev,
-                {
-                  id: generateId("pension"),
-                  owner: PERSON_ID,
-                  currentBalance: 0,
-                  annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
-                  annualChargeRate: 0.0005,
-                  employerAnnualContribution: 0,
-                  // SIPPs can't be drawn from before the Normal Minimum
-                  // Pension Age, legislated to rise to 57 from 6 April
-                  // 2028 (SPEC.md §5.7, §6.1) — defaulted to that
-                  // upcoming figure rather than the current 55, so a
-                  // new plan doesn't understate when access actually
-                  // starts for most of this projection's own horizon.
-                  accessDate: dateOfBirth ? isoDateFromAge(dateOfBirth, 57) : "",
-                },
-              ])
-            }
-          >
-            + Add pension
-          </Button>
-          <Button
-            variant="light"
-            onClick={() =>
-              setIsaAccounts((prev) => [...prev, { id: generateId("isa"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 }])
-            }
-          >
-            + Add ISA
-          </Button>
-          <Button
-            variant="light"
-            onClick={() =>
-              setGiaAccounts((prev) => [
-                ...prev,
-                {
-                  id: generateId("gia"),
-                  owner: PERSON_ID,
-                  currentBalance: 0,
-                  costBasis: 0,
-                  annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
-                  annualDividendYield: 0,
-                },
-              ])
-            }
-          >
-            + Add GIA
-          </Button>
-          <Button
-            variant="light"
-            onClick={() =>
-              setCashAccounts((prev) => [
-                ...prev,
-                { id: generateId("cash"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 },
-              ])
-            }
-          >
-            + Add cash savings
-          </Button>
-          <Button
-            variant="light"
-            onClick={() =>
-              setProperties((prev) => [
-                ...prev,
-                {
-                  id: generateId("property"),
-                  owner: PERSON_ID,
-                  propertyType: "mainResidence",
-                  currentBalance: 0,
-                  annualGrowthRate: 0,
-                  purchasePrice: 0,
-                  purchaseDate: "",
-                  grossAnnualRentalIncome: 0,
-                  lettingCosts: 0,
-                  rentalGrowthRate: 0,
-                  hasMortgage: false,
-                  mortgageInitialBalance: 0,
-                  mortgageNominalInterestRate: 0,
-                  mortgageRepaymentType: "repayment",
-                  mortgageTermYears: 25,
-                  mortgageAnnualPayment: 0,
-                  hasPlannedSale: false,
-                  saleDate: "",
-                  expectedSalePrice: 0,
-                  sellingCosts: 0,
-                  destinationAccountId: undefined,
-                },
-              ])
-            }
-          >
-            + Add property
-          </Button>
-        </Group>
+        {/* A single "+ Add account" menu, matching the CatalogPicker pattern already used for income sources/drains below — accounts aren't catalog types (SPEC.md §3.11 covers only sources/drains via the registry), so this is a small hand-written equivalent rather than a CatalogPicker call. */}
+        <Menu shadow="md" position="bottom-start">
+          <Menu.Target>
+            <Button variant="light">+ Add account</Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item
+              onClick={() =>
+                setPensionAccounts((prev) => [
+                  ...prev,
+                  {
+                    id: generateId("pension"),
+                    owner: PERSON_ID,
+                    currentBalance: 0,
+                    annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
+                    annualChargeRate: 0.0005,
+                    employerAnnualContribution: 0,
+                    // SIPPs can't be drawn from before the Normal Minimum
+                    // Pension Age, legislated to rise to 57 from 6 April
+                    // 2028 (SPEC.md §5.7, §6.1) — defaulted to that
+                    // upcoming figure rather than the current 55, so a
+                    // new plan doesn't understate when access actually
+                    // starts for most of this projection's own horizon.
+                    accessDate: dateOfBirth ? isoDateFromAge(dateOfBirth, 57) : "",
+                  },
+                ])
+              }
+            >
+              <Stack gap={0}>
+                <Text size="sm">Pension</Text>
+                <Text size="xs" c="dimmed">
+                  A SIPP or workplace defined-contribution pension.
+                </Text>
+              </Stack>
+            </Menu.Item>
+            <Menu.Item
+              onClick={() =>
+                setIsaAccounts((prev) => [...prev, { id: generateId("isa"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 }])
+              }
+            >
+              <Stack gap={0}>
+                <Text size="sm">ISA</Text>
+                <Text size="xs" c="dimmed">
+                  A stocks &amp; shares ISA.
+                </Text>
+              </Stack>
+            </Menu.Item>
+            <Menu.Item
+              onClick={() =>
+                setGiaAccounts((prev) => [
+                  ...prev,
+                  {
+                    id: generateId("gia"),
+                    owner: PERSON_ID,
+                    currentBalance: 0,
+                    costBasis: 0,
+                    annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
+                    annualDividendYield: 0,
+                  },
+                ])
+              }
+            >
+              <Stack gap={0}>
+                <Text size="sm">GIA</Text>
+                <Text size="xs" c="dimmed">
+                  A general investment account, outside any tax wrapper.
+                </Text>
+              </Stack>
+            </Menu.Item>
+            <Menu.Item
+              onClick={() =>
+                setCashAccounts((prev) => [
+                  ...prev,
+                  { id: generateId("cash"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 },
+                ])
+              }
+            >
+              <Stack gap={0}>
+                <Text size="sm">Cash savings</Text>
+                <Text size="xs" c="dimmed">
+                  An easy-access or fixed-rate cash account.
+                </Text>
+              </Stack>
+            </Menu.Item>
+            <Menu.Item
+              onClick={() =>
+                setProperties((prev) => [
+                  ...prev,
+                  {
+                    id: generateId("property"),
+                    owner: PERSON_ID,
+                    propertyType: "mainResidence",
+                    currentBalance: 0,
+                    annualGrowthRate: 0,
+                    purchasePrice: 0,
+                    purchaseDate: "",
+                    grossAnnualRentalIncome: 0,
+                    lettingCosts: 0,
+                    rentalGrowthRate: 0,
+                    hasMortgage: false,
+                    mortgageInitialBalance: 0,
+                    mortgageNominalInterestRate: 0,
+                    mortgageRepaymentType: "repayment",
+                    mortgageTermYears: 25,
+                    mortgageAnnualPayment: 0,
+                    hasPlannedSale: false,
+                    saleDate: "",
+                    expectedSalePrice: 0,
+                    sellingCosts: 0,
+                    destinationAccountId: undefined,
+                  },
+                ])
+              }
+            >
+              <Stack gap={0}>
+                <Text size="sm">Property</Text>
+                <Text size="xs" c="dimmed">
+                  Your main residence or a rental property, with an optional mortgage.
+                </Text>
+              </Stack>
+            </Menu.Item>
+          </Menu.Dropdown>
+        </Menu>
       </Stack>
 
       <Stack gap="sm">
@@ -1141,7 +1194,7 @@ export function Onboarding() {
         <Text size="sm" c="dimmed">
           Same here — add a drain only if you have one.
         </Text>
-        {incomeDrains.map((drain) => (
+        {outgoingDrains.map((drain) => (
           <CatalogInstanceCard
             key={drain.id}
             instance={drain}
@@ -1161,14 +1214,43 @@ export function Onboarding() {
             onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
           />
         ))}
-            <CatalogPicker kind="drain" onSelect={addIncomeDrain} />
-            </Stack>
+        <CatalogPicker kind="drain" onSelect={addIncomeDrain} excludeTypes={CONTRIBUTION_DRAIN_TYPES} label="+ Add drain" />
+      </Stack>
+
+      <Stack gap="sm">
+        <Title order={4}>Contributions</Title>
+        <Text size="sm" c="dimmed">
+          Money paid into a pension, ISA, GIA, or cash account each year — not required, but this is how a plan
+          models ongoing saving rather than just a starting balance.
+        </Text>
+        {contributionDrains.map((drain) => (
+          <CatalogInstanceCard
+            key={drain.id}
+            instance={drain}
+            kind="drain"
+            pensionAccounts={pensionAccounts}
+            isaAccounts={isaAccounts}
+            giaAccounts={giaAccounts}
+            cashAccounts={cashAccounts}
+            properties={properties}
+            hasSecondPerson={hasSecondPerson}
+            inflationRate={inflationRate}
+            dateOfBirth={dateOfBirth}
+            personBDateOfBirth={personBDateOfBirth}
+            statePensionAge={statePensionAge}
+            personBStatePensionAge={personBStatePensionAge}
+            onChange={(updated) => setIncomeDrains((prev) => prev.map((d) => (d.id === updated.id ? (updated as IncomeDrainInstance) : d)))}
+            onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
+          />
+        ))}
+        <CatalogPicker kind="drain" onSelect={addIncomeDrain} includeTypes={CONTRIBUTION_DRAIN_TYPES} label="+ Add contribution" />
+      </Stack>
           </Stack>
         </ScrollArea>
       </AppShell.Navbar>
 
       <AppShell.Main>
-        <ProjectionResults scenario={liveScenario} />
+        <ProjectionResults scenario={debouncedScenario} />
       </AppShell.Main>
     </AppShell>
     {quickStartOpened && (

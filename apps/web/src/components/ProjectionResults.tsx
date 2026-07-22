@@ -116,7 +116,6 @@ interface TableColumnGroup {
 }
 
 const EXPENSE_DRAIN_TYPES = new Set(["livingExpenses", "oneOffOutflow", "mortgagePayment"]);
-const CONTRIBUTION_DRAIN_TYPES = new Set(["isaContribution", "giaContribution", "cashContribution", "pensionContribution"]);
 
 /** Every `DrawdownBucket` a taxable pension withdrawal can land in (SPEC.md §5.7.3) — the four Income Tax bands, as opposed to the one tax-free UFPLS bucket. */
 const TAXABLE_PENSION_BUCKETS = new Set(["taxablePersonalAllowance", "taxableBasicRate", "taxableHigherRate", "taxableAdditionalRate"]);
@@ -129,21 +128,66 @@ function hasActiveDrawdownTarget(scenario: Scenario): boolean {
 }
 
 /**
- * The year-by-year table's column grouping (SPEC.md §7). One "Income"
- * group holds everything that came in this year, in one left-to-right
- * reading order: taxable sources first (Salary, Rental profit, State
- * Pension — each already its own `PersonYearResult` field, so no engine
- * change was needed), then the one non-taxable source (Tax-free income),
- * then the drawdown source breakdown (From pension/ISA/cash/GIA), then
- * the drawdown net total *last* — a summary of everything already shown
- * to its left in this same group, so it reads as the section's own
- * bottom line rather than another individual source. Every column keeps
- * its individual taxable (teal) / non-taxable (cyan) colouring via its
- * own `bg` override, even though they now share one group label; the
- * total's own grape sets it apart as a summary, not a source. Then
- * outgoings, then the tax columns, then the overall net income/net worth.
+ * The year-by-year table's column grouping (SPEC.md §7), left to right:
+ * Contributions first (right next to the balance columns further left
+ * still — see that group's own doc comment for why), then one "Income"
+ * group holding everything that came in this year: taxable sources first
+ * (Salary, Rental profit, State Pension — each already its own
+ * `PersonYearResult` field, so no engine change was needed), then the one
+ * non-taxable source (Tax-free income), then the drawdown source
+ * breakdown (From pension/ISA/cash/GIA), then the drawdown net total
+ * *last* — a summary of everything already shown to its left in this same
+ * group, so it reads as the section's own bottom line rather than another
+ * individual source. Every column keeps its individual taxable (teal) /
+ * non-taxable (cyan) colouring via its own `bg` override, even though they
+ * now share one group label; the total's own grape sets it apart as a
+ * summary, not a source. Then outgoings, then the tax columns, then the
+ * overall net worth.
  */
 const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
+  {
+    // Money paid into a pension/ISA/GIA/cash account each year. Placed
+    // immediately to the right of the balance columns (not inside
+    // "Outgoings", despite still being one of SPEC.md §9.4's Income
+    // Drains under the hood) since it reads as "what's going into each
+    // pot" right next to "what each pot currently holds" — and, unlike
+    // Outgoings, it no longer reduces Net income/Unallocated surplus at
+    // all (`runProjection.ts`'s `netIncome` calculation): a contribution
+    // is treated as flowing in from outside the plan's own tracked
+    // income (the same assumption an employer pension contribution
+    // already made), not as a diversion of money this table has already
+    // counted as earned. One column per account kind (not one combined
+    // total) so each lines up with its own balance column further to its
+    // left.
+    label: "Contributions",
+    bg: "var(--mantine-color-indigo-light)",
+    columns: [
+      {
+        key: "pensionContributions",
+        label: "Pension",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.pensionContributions)),
+        isIncluded: (scenario) => scenario.incomeDrains.some((d) => d.type === "pensionContribution"),
+      },
+      {
+        key: "isaContributions",
+        label: "ISA",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.isaContributions)),
+        isIncluded: (scenario) => scenario.incomeDrains.some((d) => d.type === "isaContribution"),
+      },
+      {
+        key: "giaContributions",
+        label: "GIA",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.giaContributions)),
+        isIncluded: (scenario) => scenario.incomeDrains.some((d) => d.type === "giaContribution"),
+      },
+      {
+        key: "cashContributions",
+        label: "Cash",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.cashContributions)),
+        isIncluded: (scenario) => scenario.incomeDrains.some((d) => d.type === "cashContribution"),
+      },
+    ],
+  },
   {
     label: "Income",
     bg: "var(--mantine-color-gray-light)",
@@ -283,19 +327,16 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         isIncluded: (scenario) => scenario.incomeDrains.some((d) => EXPENSE_DRAIN_TYPES.has(d.type)),
       },
       {
-        key: "contributions",
-        label: "Contributions",
-        compute: (row) => sumPence(row.perPerson.map((p) => p.accountContributions)),
-        isIncluded: (scenario) => scenario.incomeDrains.some((d) => CONTRIBUTION_DRAIN_TYPES.has(d.type)),
-      },
-      {
         key: "unallocatedSurplus",
         label: "Unallocated surplus",
-        // Left over after tax, spending, and contributions — not
-        // automatically invested anywhere (no more automatic "surplus
-        // cash sweep" into an ISA/GIA the user never asked for). Add a
-        // contribution drain to actually capture it, or leave it as a
-        // visible reminder of how much headroom a plan has each year.
+        // Left over after tax and spending — not automatically invested
+        // anywhere (no more automatic "surplus cash sweep" into an
+        // ISA/GIA the user never asked for). Add a contribution to
+        // actually capture it, or leave it as a visible reminder of how
+        // much headroom a plan has each year. No longer reduced by
+        // contributions either (see the Contributions group's own doc
+        // comment) — this is purely "what's left of your own tracked
+        // income."
         compute: (row) => sumPence(row.perPerson.map((p) => p.unallocatedSurplus)),
       },
     ],
@@ -1292,11 +1333,13 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
         <Group gap={4}>
           <Title order={4}>Year by year</Title>
           <InfoTip>
-            Account balances on the left, then everything that came in this year under &ldquo;Income&rdquo; — taxable
-            sources in teal, non-taxable in cyan, matching the balance columns. Pension withdrawals split into their
-            own tax-free and taxable shares, with the drawdown net total and combined net income (yellow) at the far
-            right of that section. Then outgoings, tax, and net worth. The &ldquo;Show&rdquo; dropdown also sets what
-            the graph above is plotted against.
+            Account balances on the left, then how much went into each one this year under
+            &ldquo;Contributions&rdquo; (money from outside the plan, not a reduction to your net income), then
+            everything that came in this year under &ldquo;Income&rdquo; — taxable sources in teal, non-taxable in
+            cyan, matching the balance columns. Pension withdrawals split into their own tax-free and taxable shares,
+            with the drawdown net total and combined net income (yellow) at the far right of that section. Then
+            outgoings, tax, and net worth. The &ldquo;Show&rdquo; dropdown also sets what the graph above is plotted
+            against.
           </InfoTip>
         </Group>
         <Select
