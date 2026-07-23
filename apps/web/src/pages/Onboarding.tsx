@@ -1240,6 +1240,7 @@ export function Onboarding() {
             personBDateOfBirth={personBDateOfBirth}
             statePensionAge={statePensionAge}
             personBStatePensionAge={personBStatePensionAge}
+            drawdownTargets={drawdownTargets}
             onChange={(updated) => setIncomeDrains((prev) => prev.map((d) => (d.id === updated.id ? (updated as IncomeDrainInstance) : d)))}
             onRemove={() => setIncomeDrains((prev) => prev.filter((d) => d.id !== drain.id))}
           />
@@ -1426,8 +1427,8 @@ function DrawdownTargetsSection({
           Your total desired income each year, from every source combined — salary, State Pension, rental profit,
           and drawdown. Automatic income counts toward it first; the engine only draws down whatever gap is left. For
           example, £30,000 salary with a £50,000 target means £20,000 drawn from savings. Reaching this figure counts
-          as spent, so you don&rsquo;t need to separately add Living Expenses unless your actual spending genuinely
-          differs from it.
+          as spent, so you don&rsquo;t need to separately add a Continuous outflow unless your actual spending
+          genuinely differs from it — or you have a known extra cost on top, like school fees.
         </InfoTip>
       </Group>
       <Text size="sm" c="dimmed">
@@ -2056,6 +2057,7 @@ function CatalogInstanceCard({
   personBDateOfBirth,
   statePensionAge,
   personBStatePensionAge,
+  drawdownTargets = [],
   onChange,
   onRemove,
 }: {
@@ -2072,6 +2074,7 @@ function CatalogInstanceCard({
   readonly personBDateOfBirth: string;
   readonly statePensionAge: number;
   readonly personBStatePensionAge: number;
+  readonly drawdownTargets?: readonly IncomeSourceInstance[];
   readonly onChange: (instance: IncomeSourceInstance | IncomeDrainInstance) => void;
   readonly onRemove: () => void;
 }) {
@@ -2088,6 +2091,16 @@ function CatalogInstanceCard({
   // when this card was first added.
   const statePensionDefaultStartDate =
     instance.type === "statePension" && ownerDob ? isoDateFromAge(ownerDob, ownerStatePensionAge) : undefined;
+  // A contribution's "Ends on" follows the same "manual override only"
+  // idiom as the State Pension default above: saving is assumed to
+  // continue until drawdown starts, so leaving the field blank tracks the
+  // first drawdown phase's start age live (moving it if that age is later
+  // edited), while explicitly setting a date/age freezes it as normal.
+  const firstDrawdownTargetStartAge = (drawdownTargets[0]?.config as TargetDrawdownIncomeConfig | undefined)?.startAge;
+  const contributionDefaultEndDate =
+    kind === "drain" && CONTRIBUTION_DRAIN_TYPES.includes(instance.type) && ownerDob && firstDrawdownTargetStartAge !== undefined
+      ? isoDateFromAge(ownerDob, firstDrawdownTargetStartAge)
+      : undefined;
   const rentalProperties = properties.filter((p) => p.propertyType === "rental");
   const allowJointOwner = !PERSON_ONLY_CATALOG_TYPES.has(instance.type);
 
@@ -2226,9 +2239,10 @@ function CatalogInstanceCard({
           />
           <AgeOrDateInput
             label="Ends on"
-            description="Leave blank for no end date"
-            value={instance.endDate ?? ""}
+            description={contributionDefaultEndDate ? "Defaults to your retirement age" : "Leave blank for no end date"}
+            value={instance.endDate ?? contributionDefaultEndDate ?? ""}
             dateOfBirth={ownerDob}
+            defaultMode={contributionDefaultEndDate ? "age" : "date"}
             onChange={setEndDate}
           />
         </Group>

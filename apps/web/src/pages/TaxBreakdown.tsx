@@ -381,7 +381,7 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
         <Section title="Other cash flows">
           {person.taxFreeIncome > 0 && <KeyValue label="Tax-free income (e.g. a one-off inheritance)" amount={person.taxFreeIncome} />}
           {person.otherExpenses > 0 && (
-            <KeyValue label="Living expenses, mortgage payments, and one-off outflows" amount={person.otherExpenses} />
+            <KeyValue label="Continuous outflows, mortgage payments, and one-off outflows" amount={person.otherExpenses} />
           )}
           {person.accountContributions > 0 && (
             <KeyValue
@@ -392,9 +392,9 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
           )}
           {person.unallocatedSurplus > 0 && (
             <KeyValue
-              label="Unallocated surplus"
+              label="Income Over Target"
               amount={person.unallocatedSurplus}
-              info="Left over after tax and spending — not automatically invested anywhere. Add a contribution if you'd like to capture it. Not reduced by any contribution already added, since a contribution is separate, untracked-source money rather than a claim on this figure."
+              info="Income beyond what a drawdown target already treats as spent — not automatically invested anywhere. Add a contribution if you'd like to capture it. Not reduced by any contribution already added, since a contribution is separate, untracked-source money rather than a claim on this figure."
             />
           )}
           {person.shortfallFundedFromSavings > 0 && (

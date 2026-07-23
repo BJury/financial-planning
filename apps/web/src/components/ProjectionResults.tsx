@@ -61,15 +61,15 @@ const CHART_METRICS: readonly ChartMetric[] = [
     color: "#2f9e44",
     scale: "flow",
     // Deliberately *not* the engine's own `PersonYearResult.netIncome`
-    // field — that one is further reduced by living expenses/
-    // contributions and by auto-consumption (achieving a drawdown target
-    // counts as spent, SPEC.md §5.7.2), so it usually settles at/near £0
-    // and doesn't answer "how much came in this year" (this bit the
-    // year-by-year table's own "Net income" column too, once — see its
-    // near-identical comment a bit further down). Recomputed here from
-    // the same already-tracked per-source figures instead, kept in sync
-    // with that column's own formula by hand since there isn't a single
-    // shared helper both pull from.
+    // field — that one is further reduced by auto-consumption (achieving
+    // a drawdown target counts as spent, SPEC.md §5.7.2) on top of
+    // expenses, so it usually settles at/near £0 and doesn't answer "how
+    // much came in this year, after what went out." Recomputed here from
+    // the same already-tracked per-source figures instead — after tax
+    // *and* expenses (Continuous outflows, mortgage payments, one-off
+    // outflows), but not auto-consumption — kept in sync with the
+    // year-by-year table's own "Net income" column formula by hand since
+    // there isn't a single shared helper both pull from.
     compute: (row) =>
       penceToPounds(
         subtractPence(
@@ -84,7 +84,16 @@ const CHART_METRICS: readonly ChartMetric[] = [
               p.propertySaleNetProceeds,
             ]),
           ),
-          sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax])),
+          sumPence(
+            row.perPerson.flatMap((p) => [
+              p.incomeTax,
+              p.nationalInsurance,
+              p.annualAllowanceCharge,
+              p.savingsTax,
+              p.dividendTax,
+              p.otherExpenses,
+            ]),
+          ),
         ),
       ),
   },
@@ -130,19 +139,22 @@ function hasActiveDrawdownTarget(scenario: Scenario): boolean {
 /**
  * The year-by-year table's column grouping (SPEC.md §7), left to right:
  * Contributions first (right next to the balance columns further left
- * still — see that group's own doc comment for why), then one "Income"
- * group holding everything that came in this year: taxable sources first
- * (Salary, Rental profit, State Pension — each already its own
- * `PersonYearResult` field, so no engine change was needed), then the one
- * non-taxable source (Tax-free income), then the drawdown source
- * breakdown (From pension/ISA/cash/GIA), then the drawdown net total
- * *last* — a summary of everything already shown to its left in this same
- * group, so it reads as the section's own bottom line rather than another
- * individual source. Every column keeps its individual taxable (teal) /
- * non-taxable (cyan) colouring via its own `bg` override, even though they
- * now share one group label; the total's own grape sets it apart as a
- * summary, not a source. Then outgoings, then the tax columns, then the
- * overall net worth.
+ * still — see that group's own doc comment for why), then "Outgoings"
+ * (just Expenses now), then one "Income" group holding everything that
+ * came in this year: taxable sources first (Salary, Rental profit, State
+ * Pension — each already its own `PersonYearResult` field, so no engine
+ * change was needed), then the one non-taxable source (Tax-free income),
+ * then the drawdown source breakdown (From pension/ISA/cash/GIA), then the
+ * drawdown net total, then "Income Over Target" (lime) and Net income
+ * (yellow) *last*, in that order — neither is an outgoing (so neither
+ * lives in "Outgoings", despite "Income Over Target" replacing what used
+ * to be called Unallocated surplus there), and Outgoings still sits to
+ * Income's *left* specifically so Net income (which nets out Expenses)
+ * reads as a running total against a column to its own left. Every column
+ * keeps its individual taxable (teal) / non-taxable (cyan) colouring via
+ * its own `bg` override, even though they now share one group label; the
+ * drawdown total's own grape, Income Over Target's lime, and Net income's
+ * yellow set them apart as summaries, not sources. Then the tax columns.
  */
 const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
   {
@@ -185,6 +197,18 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         label: "Cash",
         compute: (row) => sumPence(row.perPerson.map((p) => p.cashContributions)),
         isIncluded: (scenario) => scenario.incomeDrains.some((d) => d.type === "cashContribution"),
+      },
+    ],
+  },
+  {
+    label: "Outgoings",
+    bg: "var(--mantine-color-orange-light)",
+    columns: [
+      {
+        key: "expenses",
+        label: "Expenses",
+        compute: (row) => sumPence(row.perPerson.map((p) => p.otherExpenses)),
+        isIncluded: (scenario) => scenario.incomeDrains.some((d) => EXPENSE_DRAIN_TYPES.has(d.type)),
       },
     ],
   },
@@ -282,20 +306,40 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         isIncluded: (scenario) => hasActiveDrawdownTarget(scenario),
       },
       {
+        key: "unallocatedSurplus",
+        label: "Income Over Target",
+        // Not an outgoing — it's the slice of Net income (to its right)
+        // not already implicitly claimed by a drawdown target
+        // (`autoConsumption` in `runProjection.ts`): income achieved
+        // beyond what the target treats as spent. Zero whenever there's
+        // no active target (nothing to be "over"), which is also exactly
+        // when this column and Net income coincide. Not automatically
+        // invested anywhere — add a contribution to actually capture it,
+        // or leave it as a visible reminder of how much headroom a plan
+        // has each year. No longer reduced by contributions either (see
+        // the Contributions group's own doc comment).
+        compute: (row) => sumPence(row.perPerson.map((p) => p.unallocatedSurplus)),
+        bg: "var(--mantine-color-lime-light)",
+      },
+      {
         key: "netIncome",
         label: "Net income",
-        // Everything that came in this year, net of tax, combined —
-        // drawdown plus salary, rental profit, State Pension, and
-        // tax-free income. Deliberately *not* the engine's own
+        // Everything that came in this year, net of tax *and* expenses
+        // (Continuous outflows, mortgage payments, one-off outflows) —
+        // the true bottom line. Reads correctly against "Outgoings"
+        // (Expenses) to its *left*, even though this column itself sits
+        // at the end of "Income" rather than inside "Outgoings" — net
+        // income is fundamentally an income concept, not an outgoing.
+        // Still deliberately *not* the engine's own
         // `PersonYearResult.netIncome` field: that one is further reduced
-        // by living expenses/contributions and by auto-consumption
-        // (achieving a drawdown target counts as spent, SPEC.md §5.7.2),
-        // so it usually settles at/near £0 and doesn't answer "how much
-        // came in" — this column recomputes the total from the same
-        // already-tracked per-source figures, without those subtractions.
-        // CHART_METRICS' own "netIncome" line (above) uses this exact
-        // same formula, kept in sync by hand — no shared helper exists
-        // for it yet.
+        // by auto-consumption (achieving a drawdown target counts as
+        // spent, SPEC.md §5.7.2), so it usually settles at/near £0 —
+        // "Income Over Target" (lime, immediately to this column's left)
+        // already covers that fully-netted, floored-at-zero figure. This
+        // column recomputes from the same already-tracked per-source
+        // figures instead. CHART_METRICS' own "netIncome" line (above)
+        // uses this exact same formula, kept in sync by hand — no shared
+        // helper exists for it yet.
         compute: (row) =>
           subtractPence(
             sumPence(
@@ -309,35 +353,19 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
                 p.propertySaleNetProceeds,
               ]),
             ),
-            sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax])),
+            sumPence(
+              row.perPerson.flatMap((p) => [
+                p.incomeTax,
+                p.nationalInsurance,
+                p.annualAllowanceCharge,
+                p.savingsTax,
+                p.dividendTax,
+                p.otherExpenses,
+              ]),
+            ),
           ),
         warningFlag: (row) => row.perPerson.some((p) => p.livingExpensesShortfall),
         bg: "var(--mantine-color-yellow-light)",
-      },
-    ],
-  },
-  {
-    label: "Outgoings",
-    bg: "var(--mantine-color-orange-light)",
-    columns: [
-      {
-        key: "expenses",
-        label: "Expenses",
-        compute: (row) => sumPence(row.perPerson.map((p) => p.otherExpenses)),
-        isIncluded: (scenario) => scenario.incomeDrains.some((d) => EXPENSE_DRAIN_TYPES.has(d.type)),
-      },
-      {
-        key: "unallocatedSurplus",
-        label: "Unallocated surplus",
-        // Left over after tax and spending — not automatically invested
-        // anywhere (no more automatic "surplus cash sweep" into an
-        // ISA/GIA the user never asked for). Add a contribution to
-        // actually capture it, or leave it as a visible reminder of how
-        // much headroom a plan has each year. No longer reduced by
-        // contributions either (see the Contributions group's own doc
-        // comment) — this is purely "what's left of your own tracked
-        // income."
-        compute: (row) => sumPence(row.perPerson.map((p) => p.unallocatedSurplus)),
       },
     ],
   },
@@ -1363,11 +1391,12 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
           <InfoTip>
             Account balances on the left, then how much went into each one this year under
             &ldquo;Contributions&rdquo; (money from outside the plan, not a reduction to your net income), then
-            everything that came in this year under &ldquo;Income&rdquo; — taxable sources in teal, non-taxable in
-            cyan, matching the balance columns. Pension withdrawals split into their own tax-free and taxable shares,
-            with the drawdown net total and combined net income (yellow) at the far right of that section. Then
-            outgoings, tax, and net worth. The &ldquo;Show&rdquo; dropdown also sets what the graph above is plotted
-            against.
+            &ldquo;Outgoings&rdquo; — just expenses — then everything that came in this year under
+            &ldquo;Income&rdquo; — taxable sources in teal, non-taxable in cyan, matching the balance columns.
+            Pension withdrawals split into their own tax-free and taxable shares, with the drawdown net total, then
+            &ldquo;Income Over Target&rdquo; (lime — income beyond what a drawdown target already treats as spent),
+            then combined net income (yellow) after both tax and expenses, at the far right of that section. Then
+            tax and net worth. The &ldquo;Show&rdquo; dropdown also sets what the graph above is plotted against.
           </InfoTip>
         </Group>
         <Select

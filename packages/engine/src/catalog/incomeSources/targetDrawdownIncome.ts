@@ -19,10 +19,11 @@ export interface TargetDrawdownIncomeConfig {
    * just "how much extra to draw on top of everything else". Salary, State
    * Pension, rental profit, and other automatic income all count toward it
    * first; drawdown only fills whatever gap is left. Achieving this amount
-   * is automatically treated as spent, so a separate Living Expenses drain
-   * isn't required for the primary "will I have enough" journey — it's
-   * there for the (rarer) case where actual spending genuinely differs
-   * from this figure.
+   * is automatically treated as spent, so a separate Continuous outflow
+   * drain isn't required for the primary "will I have enough" journey —
+   * it's there for the (rarer) case where actual spending genuinely
+   * differs from this figure, or for a known extra cost on top (school
+   * fees, care costs) that should still show up in net income.
    */
   readonly targetNetAnnualIncome: Pence;
   /** Defaults, in the UI, to the owner's target retirement age (SPEC.md §5.7.1). For a joint target, gated on the first household member's age — a documented v1 convention (SPEC.md §5.7.4). */

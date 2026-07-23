@@ -46,7 +46,7 @@ interface Shortfall {
   readonly yearIndex: number;
 }
 
-/** The first year, if any, where any household member's drawdown target or living expenses weren't fully covered — the same two signals `ProjectionResults.tsx`'s "Key flags"/shortfall shading already use for identical purpose. */
+/** The first year, if any, where any household member's drawdown target or a continuous outflow wasn't fully covered — the same two signals `ProjectionResults.tsx`'s "Key flags"/shortfall shading already use for identical purpose. */
 function firstShortfall(result: ProjectionResult): Shortfall | null {
   for (let yearIndex = 0; yearIndex < result.rows.length; yearIndex++) {
     const row = result.rows[yearIndex];
@@ -262,8 +262,8 @@ export function StressTest() {
 
       <Text size="xs" c="dimmed">
         The outlined cell is your plan as it stands today (no change on either axis). A cell shows the first tax
-        year — or, with &ldquo;Show age instead of year&rdquo; on, your age(s) that year — a drawdown target or
-        living expenses weren&rsquo;t fully covered, or &ldquo;OK&rdquo; if the plan survives the whole projection
+        year — or, with &ldquo;Show age instead of year&rdquo; on, your age(s) that year — a drawdown target or a
+        continuous outflow wasn&rsquo;t fully covered, or &ldquo;OK&rdquo; if the plan survives the whole projection
         under that combination — shaded a brighter red the earlier that failure happens, so the worst combinations
         stand out at a glance.
       </Text>

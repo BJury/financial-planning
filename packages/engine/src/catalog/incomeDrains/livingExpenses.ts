@@ -3,13 +3,30 @@ import type { Owner } from "../../schema/types.js";
 import { registry } from "../registry.js";
 import type { CatalogFieldSchema, IncomeDrainDefinition, ScenarioState, ValidationIssue, YearContext } from "../types.js";
 
+/** Informational only — every category has the same (no) tax effect (SPEC.md §3.9: not deductible), mirroring `OneOffOutflowCategory`. */
+export type ContinuousOutflowCategory = "livingCosts" | "educationFees" | "careCosts" | "debtRepayment" | "other";
+
 export interface LivingExpensesConfig {
   /** Already in today's terms (SPEC.md §5.8) — a flat real amount, not linked to any account. */
   readonly annualAmount: Pence;
+  readonly category: ContinuousOutflowCategory;
 }
 
 const fields: readonly CatalogFieldSchema<LivingExpensesConfig>[] = [
-  { key: "annualAmount", label: "Annual living expenses", input: "currency", required: true },
+  { key: "annualAmount", label: "Amount per year", input: "currency", required: true },
+  {
+    key: "category",
+    label: "Category",
+    input: "select",
+    required: true,
+    options: [
+      { value: "livingCosts", label: "General living costs" },
+      { value: "educationFees", label: "School/university fees" },
+      { value: "careCosts", label: "Care costs" },
+      { value: "debtRepayment", label: "Loan/debt repayment" },
+      { value: "other", label: "Other" },
+    ],
+  },
 ];
 
 function validate(config: Readonly<LivingExpensesConfig>): readonly ValidationIssue[] {
@@ -19,7 +36,7 @@ function validate(config: Readonly<LivingExpensesConfig>): readonly ValidationIs
     issues.push({
       field: "annualAmount",
       tier: "hardBlock",
-      message: "Annual living expenses cannot be negative.",
+      message: "Amount cannot be negative.",
     });
   }
 
@@ -49,9 +66,15 @@ function calculateForYear(
 }
 
 export const livingExpensesDefinition: IncomeDrainDefinition<LivingExpensesConfig> = {
+  // Kept as "livingExpenses" (not renamed to e.g. "continuousOutflow")
+  // so existing persisted scenarios (IndexedDB autosave, exported plan
+  // files) still resolve against the registry — this is a display-name
+  // and framing change only, matching how "Contributions" was already
+  // split out as a UI-layer grouping without an engine type rename.
   type: "livingExpenses",
-  displayName: "Living expenses",
-  description: "Optional — only needed if your actual spending differs from your income target",
+  displayName: "Continuous outflow",
+  description:
+    "A known recurring cost over a period — school fees, care costs, a loan repayment, or general living costs — so it's accounted for in your net income",
   taxTreatment: "none",
   fields,
   validate,

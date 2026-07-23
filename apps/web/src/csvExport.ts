@@ -18,7 +18,7 @@ const COLUMNS = [
   "Property sale net proceeds",
   "Shortfall funded from savings",
   "Net income",
-  "Unallocated surplus",
+  "Income Over Target",
   "Household net worth",
 ] as const;
 
@@ -52,14 +52,15 @@ export function projectionToCsv(result: ProjectionResult): string {
     for (const [index, person] of row.perPerson.entries()) {
       const label = row.perPerson.length > 1 ? (index === 0 ? "Person 1" : "Person 2") : "";
       // Deliberately *not* `person.netIncome` — that engine field is
-      // further reduced by living expenses/contributions and by
-      // auto-consumption (achieving a drawdown target counts as spent,
-      // SPEC.md §5.7.2), so it usually settles at/near £0 and doesn't
-      // answer "how much came in this year". Same recomputation as the
+      // further reduced by auto-consumption (achieving a drawdown target
+      // counts as spent, SPEC.md §5.7.2) on top of expenses, so it
+      // usually settles at/near £0 and doesn't answer "how much came in
+      // this year, after what went out". Same recomputation as the
       // year-by-year table's own "Net income" column and the projection
-      // chart's own "Net income" line (ProjectionResults.tsx), narrowed
-      // to this one person instead of summed across the household —
-      // kept in sync with both by hand, no shared helper exists yet.
+      // chart's own "Net income" line (ProjectionResults.tsx) — after tax
+      // *and* expenses, but not auto-consumption — narrowed to this one
+      // person instead of summed across the household — kept in sync
+      // with both by hand, no shared helper exists yet.
       const netIncome = subtractPence(
         sumPence([
           person.grossIncome,
@@ -70,7 +71,14 @@ export function projectionToCsv(result: ProjectionResult): string {
           person.mortgageInterestCredit,
           person.propertySaleNetProceeds,
         ]),
-        sumPence([person.incomeTax, person.nationalInsurance, person.annualAllowanceCharge, person.savingsTax, person.dividendTax]),
+        sumPence([
+          person.incomeTax,
+          person.nationalInsurance,
+          person.annualAllowanceCharge,
+          person.savingsTax,
+          person.dividendTax,
+          person.otherExpenses,
+        ]),
       );
       lines.push(
         [

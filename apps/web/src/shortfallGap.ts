@@ -119,7 +119,7 @@ function withExtraBalance(scenario: Scenario, kind: GapAccountKind, owner: Perso
  * re-run the whole projection, check whether any shortfall remains)
  * rather than a formula derived by hand — the actual rules governing
  * which account a shortfall can draw from (SPEC.md §5.1 step 7's cash→
- * ISA→GIA order, never a pension for a Living Expenses shortfall; a
+ * ISA→GIA order, never a pension for a Continuous outflow shortfall; a
  * Retirement income target drawing from all four pooled) already live
  * correctly in `runProjection`, and re-deriving them here risks drifting
  * out of sync with the real thing. This is also *why* the result can
@@ -169,7 +169,7 @@ export function computeShortfallGaps(scenario: Scenario): readonly ShortfallGap[
       extraNeeded: undefined,
       unfixableReason:
         kind === "pension" && onlyLivingExpensesShortfall
-          ? "a pension is never drawn from to cover Living Expenses — only a Retirement income target does that"
+          ? "a pension is never drawn from to cover a continuous outflow — only a Retirement income target does that"
           : "no realistic amount in this account alone resolves it",
     };
   });
