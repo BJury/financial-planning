@@ -25,7 +25,7 @@ import {
   type Scenario,
   type TargetDrawdownIncomeConfig,
 } from "@fp/engine";
-import { ActionIcon, AppShell, Burger, Button, Card, Group, Menu, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
+import { ActionIcon, AppShell, Burger, Button, Card, Group, Menu, Modal, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { useEffect, useMemo, useState } from "react";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
@@ -38,6 +38,7 @@ import { PlanFileControls } from "../components/PlanFileControls.js";
 import { ProjectionResults } from "../components/ProjectionResults.js";
 import { QuickStartWizard, type QuickStartAnswers } from "../components/QuickStartWizard.js";
 import { formatNumber } from "../format.js";
+import { clearSavedScenario } from "../persistence/autosave.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
@@ -386,7 +387,9 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
 export function Onboarding() {
   const setScenario = useScenarioStore((s) => s.setScenario);
   const existingScenario = useScenarioStore((s) => s.scenario);
+  const resetScenario = useScenarioStore((s) => s.resetScenario);
   const [navOpened, { toggle: toggleNav }] = useDisclosure();
+  const [newPlanConfirmOpened, { open: openNewPlanConfirm, close: closeNewPlanConfirm }] = useDisclosure(false);
 
   // Computed once, from whatever was in the store at mount time — by the
   // time this page can be reached, App's initial hydration (§9.2) has
@@ -413,6 +416,19 @@ export function Onboarding() {
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
   const [quickStartOpened, setQuickStartOpened] = useState(false);
+
+  // "New" (SPEC.md §9.2's escape hatch for "I want to start over") clears
+  // both halves of persistence: the in-memory store (`resetScenario`,
+  // which also forces `Onboarding` to remount via `loadGeneration` and
+  // re-derive its own blank defaults) and the autosaved IndexedDB row
+  // (`clearSavedScenario`) — resetting only the former would leave the
+  // old plan sitting there ready to silently reappear on the next
+  // refresh.
+  const handleConfirmNewPlan = () => {
+    void clearSavedScenario();
+    resetScenario();
+    closeNewPlanConfirm();
+  };
 
   const addIncomeSource = (type: string) => {
     const definition = registry.getIncomeSource(type);
@@ -834,9 +850,14 @@ export function Onboarding() {
               <AboutDialog />
               <ColorSchemeToggle />
             </Group>
-            <Button variant="light" onClick={() => setQuickStartOpened(true)}>
-              Quick start
-            </Button>
+            <Group gap="xs" grow>
+              <Button variant="light" onClick={() => setQuickStartOpened(true)}>
+                Quick start
+              </Button>
+              <Button variant="light" color="red" onClick={openNewPlanConfirm}>
+                New
+              </Button>
+            </Group>
             <Stack gap="sm">
               <Title order={4}>About you</Title>
         <TextInput
@@ -1258,6 +1279,22 @@ export function Onboarding() {
     {quickStartOpened && (
       <QuickStartWizard existingAnswers={quickStartDefaults} onClose={() => setQuickStartOpened(false)} onComplete={applyQuickStart} />
     )}
+    <Modal opened={newPlanConfirmOpened} onClose={closeNewPlanConfirm} title="Start a new plan?" centered>
+      <Stack gap="md">
+        <Text size="sm">
+          This clears everything — accounts, income, outgoings, assumptions — and can&rsquo;t be undone. If you want
+          to keep what you have, use &ldquo;Save to file&rdquo; first.
+        </Text>
+        <Group justify="flex-end">
+          <Button variant="subtle" onClick={closeNewPlanConfirm}>
+            Cancel
+          </Button>
+          <Button color="red" onClick={handleConfirmNewPlan}>
+            Start new plan
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
     </>
   );
 }

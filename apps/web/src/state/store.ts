@@ -26,6 +26,18 @@ export interface ScenarioStore {
   /** Use for a wholesale replacement from outside the current editing session (initial hydration, "Open from file") — see `loadGeneration` above. */
   loadScenario: (scenario: Scenario) => void;
   updateScenario: (updater: (scenario: Scenario) => Scenario) => void;
+  /**
+   * The "New" action's in-memory half: wipes back to `null`, the exact
+   * state a genuine first-time visitor starts from, so `Onboarding`
+   * re-derives its own blank defaults rather than being handed a
+   * synthetic empty `Scenario` object to special-case. Also bumps
+   * `loadGeneration` — same reasoning as `loadScenario` above, a reset
+   * triggered from the main page needs the same forced remount an import
+   * does. Doesn't touch IndexedDB itself; callers pair this with
+   * `persistence/autosave.ts`'s `clearSavedScenario` so a refresh
+   * afterwards doesn't resurrect the old plan.
+   */
+  resetScenario: () => void;
   setHasHydrated: (hasHydrated: boolean) => void;
 }
 
@@ -47,6 +59,9 @@ export const useScenarioStore = create<ScenarioStore>((set) => ({
   },
   updateScenario: (updater) => {
     set((state) => (state.scenario ? { scenario: updater(state.scenario) } : state));
+  },
+  resetScenario: () => {
+    set((state) => ({ scenario: null, loadGeneration: state.loadGeneration + 1 }));
   },
   setHasHydrated: (hasHydrated) => {
     set({ hasHydrated });

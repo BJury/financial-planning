@@ -31,6 +31,21 @@ export function scheduleAutosave(scenario: Scenario): void {
 }
 
 /**
+ * Deletes the persisted Scenario row entirely — the "New" action's
+ * IndexedDB half, paired with the store's `resetScenario`. Also cancels
+ * any already-scheduled debounced write, otherwise a save queued just
+ * before "New" is clicked could still land *after* this delete and
+ * silently resurrect the old plan a moment later.
+ */
+export async function clearSavedScenario(): Promise<void> {
+  if (saveTimeout !== undefined) {
+    clearTimeout(saveTimeout);
+    saveTimeout = undefined;
+  }
+  await db.scenarios.delete(CURRENT_SCENARIO_ID);
+}
+
+/**
  * Loads the saved Scenario on app start, if one exists (SPEC.md §4
  * journey 1: a returning visit resumes exactly where the user left off).
  * Returns `null` for a genuine first-time visit — the caller falls back
