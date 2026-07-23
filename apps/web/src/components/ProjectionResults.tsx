@@ -149,6 +149,10 @@ function computeCgt(row: YearLedgerRow): Pence {
   return sumPence(row.perPerson.flatMap((p) => [p.drawdownCapitalGainsTax, p.propertySaleCapitalGainsTax, p.shortfallCapitalGainsTax]));
 }
 
+function computeIncomeOverTarget(row: YearLedgerRow): Pence {
+  return sumPence(row.perPerson.map((p) => p.unallocatedSurplus));
+}
+
 /** Whether any row in the projection actually has a nonzero value for a given per-row compute — used by columns whose relevance can't be determined from the scenario's declared catalog types alone (SPEC.md doesn't map every tax to one specific income type). */
 function hasAnyNonzeroValue(result: ProjectionResult | null, compute: (row: YearLedgerRow) => Pence): boolean {
   return (result?.rows ?? []).some((row) => compute(row) !== 0);
@@ -346,7 +350,8 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         // or leave it as a visible reminder of how much headroom a plan
         // has each year. No longer reduced by contributions either (see
         // the Contributions group's own doc comment).
-        compute: (row) => sumPence(row.perPerson.map((p) => p.unallocatedSurplus)),
+        compute: computeIncomeOverTarget,
+        isIncluded: (_scenario, result) => hasAnyNonzeroValue(result, computeIncomeOverTarget),
         bg: "var(--mantine-color-lime-light)",
       },
       {
