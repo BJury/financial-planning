@@ -1,5 +1,9 @@
 import {
+  addPence,
   ageAtYear,
+  getLatestConfirmedRuleSet,
+  multiplyPenceByRate,
+  prepareRuleSetForScenario,
   subtractPence,
   sumPence,
   totalTaxForYear,
@@ -7,6 +11,7 @@ import {
   type IncomeSourceInstance,
   type Pence,
   type PersonYearResult,
+  type PreparedYearRules,
   type Scenario,
   type TargetDrawdownIncomeConfig,
   type YearLedgerRow,
@@ -114,6 +119,20 @@ export function TaxBreakdown() {
   const row = rows.find((r) => r.taxYear === selectedTaxYear) ?? rows[0];
   const drawdownComparison = useHouseholdDrawdownComparison(scenario, row);
 
+  // The exact rules the engine itself used for the selected year (SPEC.md
+  // §5.8) — real-terms uprated, not the raw current-year figures, so this
+  // matches what actually drove the numbers below rather than a separate,
+  // possibly-stale reference. Re-derived independently from `scenario`
+  // rather than threaded through `YearLedgerRow` (which would mean
+  // carrying this whole object on every one of the projection's ~30-50
+  // rows just for this one reference display).
+  const prepared = useMemo(() => {
+    if (!scenario || !row) return null;
+    const confirmedRuleSet = getLatestConfirmedRuleSet();
+    const confirmedCalendarYear = Number.parseInt(confirmedRuleSet.taxYear.split("-")[0] ?? "0", 10);
+    return prepareRuleSetForScenario(confirmedRuleSet, scenario.upratingPolicy, scenario.inflationRate, row.calendarYear - confirmedCalendarYear);
+  }, [scenario, row]);
+
   if (!scenario) {
     return <Navigate to="/" replace />;
   }
@@ -124,7 +143,7 @@ export function TaxBreakdown() {
         <Title order={2}>Tax breakdown</Title>
         <Group gap="xs">
           <PlanFileControls />
-          <Button variant="subtle" onClick={() => void navigate("/")}>
+          <Button variant="subtle" size="xs" onClick={() => void navigate("/")}>
             Back to projection
           </Button>
           <AboutDialog />
@@ -143,6 +162,8 @@ export function TaxBreakdown() {
         onChange={setSelectedTaxYear}
         allowDeselect={false}
       />
+
+      {prepared && <TaxRulesReference prepared={prepared} />}
 
       {row && row.survivorshipEvents.length > 0 && (
         <Alert color="orange" variant="light">
@@ -420,6 +441,87 @@ function PersonBreakdown({ person, label }: { readonly person: PersonYearResult;
         <KeyValue label="Net income" amount={person.netIncome} bold />
       </Section>
     </Stack>
+  );
+}
+
+/** A `PreparedYearRules.incomeTaxBands` entry — not imported by name (that type isn't part of the engine's public API surface), just derived structurally from the one field that already exposes its shape. */
+type IncomeTaxBandRule = PreparedYearRules["incomeTaxBands"][number];
+
+/** The rate that applies to the next pound of income at exactly this total — used to find which band the Personal Allowance taper range itself falls in, without hardcoding "the higher rate" (SPEC.md's own bands could in principle be restructured in a future tax year). */
+function marginalRateAt(bands: readonly IncomeTaxBandRule[], totalIncome: Pence): number {
+  for (const band of bands) {
+    if (band.upTo === null || totalIncome <= band.upTo) return band.rate;
+  }
+  return bands[bands.length - 1]?.rate ?? 0;
+}
+
+/**
+ * SPEC.md §4 journey 5's transparency mission, one level up from a single
+ * year's calculated result: the actual rules that produced it. Shown in
+ * real terms (today's money) rather than the raw published 2026/27
+ * numbers — no year in the heading, deliberately: every scenario built
+ * through this app's own UI always uses the `inflationLinked` uprating
+ * policy (`Onboarding.tsx` hardcodes it, no control exists to change it),
+ * under which a real-terms threshold is defined to stay unchanged from
+ * one projected year to the next (`uprateThreshold.ts`) — so these
+ * figures are genuinely identical for every year in this plan, and
+ * labelling them with the currently-selected year would wrongly imply
+ * they'd be different for another one.
+ */
+function TaxRulesReference({ prepared }: { readonly prepared: PreparedYearRules }) {
+  // Where the Personal Allowance taper reaches £0 — £1 of allowance is
+  // lost per £2 of income above the threshold (`personalAllowanceTaperRate`
+  // of 0.5 already encodes that ratio), so the full allowance disappears
+  // after `personalAllowance / taperRate` of extra income above it.
+  const taperZeroPoint = addPence(
+    prepared.personalAllowanceTaperThreshold,
+    multiplyPenceByRate(prepared.personalAllowance, 1 / prepared.personalAllowanceTaperRate),
+  );
+  const effectiveTaperRate = marginalRateAt(prepared.incomeTaxBands, prepared.personalAllowanceTaperThreshold) * (1 + prepared.personalAllowanceTaperRate);
+
+  return (
+    <Section title="Tax rates & bands">
+      <Text size="sm" c="dimmed">
+        The rules every year&rsquo;s figures below are actually calculated with, in today&rsquo;s money — kept flat
+        in real terms for the whole plan (SPEC.md §5.8), the same as every other assumption here, rather than fixed
+        to 2026/27&rsquo;s published cash amounts.
+      </Text>
+      <Table>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Band</Table.Th>
+            <Table.Th>Rate</Table.Th>
+            <Table.Th>Up to</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          <Table.Tr>
+            <Table.Td>Personal Allowance</Table.Td>
+            <Table.Td>{formatPercent(0)}</Table.Td>
+            <Table.Td>{formatMoney(prepared.personalAllowance)}</Table.Td>
+          </Table.Tr>
+          {prepared.incomeTaxBands.map((band) => (
+            <Table.Tr key={band.name}>
+              <Table.Td>{BAND_LABELS[band.name] ?? band.name}</Table.Td>
+              <Table.Td>{formatPercent(band.rate)}</Table.Td>
+              <Table.Td>{band.upTo === null ? "No limit" : formatMoney(band.upTo)}</Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+      <Text size="sm">
+        <strong>Personal Allowance tapering:</strong> above {formatMoney(prepared.personalAllowanceTaperThreshold)} of
+        adjusted net income, the Personal Allowance shown above shrinks by £1 for every £2 earned over that
+        threshold — not the band rates themselves changing, but the tax-free amount disappearing, which pulls more
+        income into tax. It reaches £0 once income hits {formatMoney(taperZeroPoint)}. Combined with the{" "}
+        {formatPercent(marginalRateAt(prepared.incomeTaxBands, prepared.personalAllowanceTaperThreshold))} rate
+        already applying in that range, this creates an effective marginal rate of about{" "}
+        {formatPercent(effectiveTaperRate)} between those two figures — sometimes called the &ldquo;60% tax
+        trap.&rdquo; A pension contribution (relief-at-source) reduces the adjusted net income this taper is measured
+        against, which is why increasing one can pull someone back under the threshold and restore some of their
+        allowance.
+      </Text>
+    </Section>
   );
 }
 

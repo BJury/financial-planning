@@ -32,6 +32,7 @@ function AccountStep({
         leftSection="£"
         decimalScale={2}
         thousandSeparator=","
+        step={1000}
         value={value.balance}
         onChange={(v) => onChange({ ...value, balance: typeof v === "number" ? v : 0 })}
       />
@@ -40,6 +41,7 @@ function AccountStep({
         leftSection="£"
         decimalScale={2}
         thousandSeparator=","
+        step={1000}
         value={value.annualContribution}
         onChange={(v) => onChange({ ...value, annualContribution: typeof v === "number" ? v : 0 })}
       />
@@ -122,6 +124,7 @@ export function QuickStartWizard({
             leftSection="£"
             decimalScale={2}
             thousandSeparator=","
+            step={1000}
             value={answers.targetAnnualIncome}
             onChange={(v) => setAnswers({ ...answers, targetAnnualIncome: typeof v === "number" ? v : 0 })}
           />

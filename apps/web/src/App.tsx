@@ -4,6 +4,7 @@ import { HashRouter, Route, Routes } from "react-router";
 import { loadSavedScenario, subscribeAutosave } from "./persistence/autosave.js";
 import { Onboarding } from "./pages/Onboarding.js";
 import { StressTest } from "./pages/StressTest.js";
+import { TargetSensitivity } from "./pages/TargetSensitivity.js";
 import { TaxBreakdown } from "./pages/TaxBreakdown.js";
 import { useScenarioStore } from "./state/store.js";
 
@@ -42,6 +43,7 @@ export function App() {
             <Route path="/" element={<Onboarding key={loadGeneration} />} />
             <Route path="/tax-breakdown" element={<TaxBreakdown />} />
             <Route path="/stress-test" element={<StressTest />} />
+            <Route path="/target-sensitivity" element={<TargetSensitivity />} />
           </Routes>
         </HashRouter>
       ) : (

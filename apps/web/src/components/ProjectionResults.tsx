@@ -111,8 +111,17 @@ interface TableColumn {
   readonly compute: (row: YearLedgerRow) => Pence;
   /** Shows a ⚠ next to the value — only the drawdown and net income columns use this, each keyed off a different shortfall flag than "the figure itself is negative." */
   readonly warningFlag?: (row: YearLedgerRow) => boolean;
-  /** Whether this column is even relevant — hidden entirely (not just full of zeroes) when the user hasn't added the underlying income source/drain type at all. Omitted for a column that's always relevant regardless of scenario contents (the tax columns — there's no single catalog type to check for "any tax at all"). */
-  readonly isIncluded?: (scenario: Scenario) => boolean;
+  /**
+   * Whether this column is even relevant — hidden entirely (not just full
+   * of zeroes) when the user hasn't added the underlying income
+   * source/drain type at all. Most columns check `scenario` alone (a
+   * declared catalog type); the tax columns instead check `result` (every
+   * row's actual computed value) since there's no single catalog type to
+   * check for "any tax at all" — plenty of scenarios have income sources
+   * that never actually generate tax (e.g. entirely within the Personal
+   * Allowance).
+   */
+  readonly isIncluded?: (scenario: Scenario, result: ProjectionResult | null) => boolean;
   /** Overrides the group's own colour for just this one column — used by the two drawdown-source columns, which need to match the Pension/Non-taxable balance columns' colours rather than the rest of the Drawdown group's grape. */
   readonly bg?: string;
 }
@@ -125,6 +134,25 @@ interface TableColumnGroup {
 }
 
 const EXPENSE_DRAIN_TYPES = new Set(["livingExpenses", "oneOffOutflow", "mortgagePayment"]);
+
+// Named (not inline) so the Tax columns' own `isIncluded` can reuse the
+// exact same formula their `compute` uses, rather than a second,
+// separately-maintained copy of it.
+function computeIncomeTaxAndNi(row: YearLedgerRow): Pence {
+  return subtractPence(
+    sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.drawdownIncomeTax, p.savingsTax, p.dividendTax, p.nationalInsurance])),
+    sumPence(row.perPerson.map((p) => p.mortgageInterestCredit)),
+  );
+}
+
+function computeCgt(row: YearLedgerRow): Pence {
+  return sumPence(row.perPerson.flatMap((p) => [p.drawdownCapitalGainsTax, p.propertySaleCapitalGainsTax, p.shortfallCapitalGainsTax]));
+}
+
+/** Whether any row in the projection actually has a nonzero value for a given per-row compute — used by columns whose relevance can't be determined from the scenario's declared catalog types alone (SPEC.md doesn't map every tax to one specific income type). */
+function hasAnyNonzeroValue(result: ProjectionResult | null, compute: (row: YearLedgerRow) => Pence): boolean {
+  return (result?.rows ?? []).some((row) => compute(row) !== 0);
+}
 
 /** Every `DrawdownBucket` a taxable pension withdrawal can land in (SPEC.md §5.7.3) — the four Income Tax bands, as opposed to the one tax-free UFPLS bucket. */
 const TAXABLE_PENSION_BUCKETS = new Set(["taxablePersonalAllowance", "taxableBasicRate", "taxableHigherRate", "taxableAdditionalRate"]);
@@ -379,16 +407,14 @@ const TABLE_COLUMN_GROUPS: readonly TableColumnGroup[] = [
         // NI folded in here rather than kept as its own column — it's
         // never interesting on its own, only as part of the total tax
         // bite on income.
-        compute: (row) =>
-          subtractPence(
-            sumPence(row.perPerson.flatMap((p) => [p.incomeTax, p.drawdownIncomeTax, p.savingsTax, p.dividendTax, p.nationalInsurance])),
-            sumPence(row.perPerson.map((p) => p.mortgageInterestCredit)),
-          ),
+        compute: computeIncomeTaxAndNi,
+        isIncluded: (_scenario, result) => hasAnyNonzeroValue(result, computeIncomeTaxAndNi),
       },
       {
         key: "cgt",
         label: "CGT",
-        compute: (row) => sumPence(row.perPerson.flatMap((p) => [p.drawdownCapitalGainsTax, p.propertySaleCapitalGainsTax, p.shortfallCapitalGainsTax])),
+        compute: computeCgt,
+        isIncluded: (_scenario, result) => hasAnyNonzeroValue(result, computeCgt),
       },
     ],
   },
@@ -1177,10 +1203,10 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       scenario
         ? TABLE_COLUMN_GROUPS.map((group) => ({
             ...group,
-            columns: group.columns.filter((c) => (c.isIncluded ? c.isIncluded(scenario) : true)),
+            columns: group.columns.filter((c) => (c.isIncluded ? c.isIncluded(scenario, result) : true)),
           })).filter((group) => group.columns.length > 0)
         : [],
-    [scenario],
+    [scenario, result],
   );
 
   // Seeds the chart with each pension/ISA/GIA/cash balance line the first
@@ -1263,14 +1289,17 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       <Group justify="space-between">
         <Title order={2}>Your projection</Title>
         <Group gap="xs">
-          <Button variant="subtle" onClick={() => downloadCsv(projectionToCsv(result))}>
+          <Button variant="subtle" size="xs" onClick={() => downloadCsv(projectionToCsv(result))}>
             Export report
           </Button>
-          <Button variant="subtle" onClick={() => void navigate("/tax-breakdown")}>
+          <Button variant="subtle" size="xs" onClick={() => void navigate("/tax-breakdown")}>
             Tax breakdown
           </Button>
-          <Button variant="subtle" onClick={() => void navigate("/stress-test")}>
+          <Button variant="subtle" size="xs" onClick={() => void navigate("/stress-test")}>
             Stress test
+          </Button>
+          <Button variant="subtle" size="xs" onClick={() => void navigate("/target-sensitivity")}>
+            Target sensitivity
           </Button>
         </Group>
       </Group>

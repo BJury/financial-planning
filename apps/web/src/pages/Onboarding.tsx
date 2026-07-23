@@ -1598,6 +1598,7 @@ function PensionAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={account.currentBalance}
           onChange={(v) => onChange({ ...account, currentBalance: typeof v === "number" ? v : 0 })}
         />
@@ -1626,6 +1627,7 @@ function PensionAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={account.employerAnnualContribution}
           onChange={(v) => onChange({ ...account, employerAnnualContribution: typeof v === "number" ? v : 0 })}
         />
@@ -1670,6 +1672,7 @@ function IsaAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={account.currentBalance}
           onChange={(v) => onChange({ ...account, currentBalance: typeof v === "number" ? v : 0 })}
         />
@@ -1712,6 +1715,7 @@ function GiaAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={account.currentBalance}
           onChange={(v) => onChange({ ...account, currentBalance: typeof v === "number" ? v : 0 })}
         />
@@ -1721,6 +1725,7 @@ function GiaAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={account.costBasis}
           onChange={(v) => onChange({ ...account, costBasis: typeof v === "number" ? v : 0 })}
         />
@@ -1771,6 +1776,7 @@ function CashAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={account.currentBalance}
           onChange={(v) => onChange({ ...account, currentBalance: typeof v === "number" ? v : 0 })}
         />
@@ -1853,6 +1859,7 @@ function PropertyAccountCard({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
           value={property.currentBalance}
           onChange={(v) => onChange({ ...property, currentBalance: typeof v === "number" ? v : 0 })}
         />
@@ -1868,6 +1875,7 @@ function PropertyAccountCard({
             leftSection="£"
             decimalScale={2}
             thousandSeparator=","
+            step={1000}
             value={property.purchasePrice}
             onChange={(v) => onChange({ ...property, purchasePrice: typeof v === "number" ? v : 0 })}
           />
@@ -1892,6 +1900,7 @@ function PropertyAccountCard({
                   leftSection="£"
                   decimalScale={2}
                   thousandSeparator=","
+                  step={1000}
                   value={property.grossAnnualRentalIncome}
                   onChange={(v) => onChange({ ...property, grossAnnualRentalIncome: typeof v === "number" ? v : 0 })}
                 />
@@ -1901,6 +1910,7 @@ function PropertyAccountCard({
                   leftSection="£"
                   decimalScale={2}
                   thousandSeparator=","
+                  step={1000}
                   value={property.lettingCosts}
                   onChange={(v) => onChange({ ...property, lettingCosts: typeof v === "number" ? v : 0 })}
                 />
@@ -1935,6 +1945,7 @@ function PropertyAccountCard({
                 leftSection="£"
                 decimalScale={2}
                 thousandSeparator=","
+                step={1000}
                 value={property.mortgageInitialBalance}
                 onChange={(v) => onChange({ ...property, mortgageInitialBalance: typeof v === "number" ? v : 0 })}
               />
@@ -1968,6 +1979,7 @@ function PropertyAccountCard({
                 leftSection="£"
                 decimalScale={2}
                 thousandSeparator=","
+                step={1000}
                 value={property.mortgageAnnualPayment}
                 onChange={(v) => onChange({ ...property, mortgageAnnualPayment: typeof v === "number" ? v : 0 })}
               />
@@ -2001,6 +2013,7 @@ function PropertyAccountCard({
                 leftSection="£"
                 decimalScale={2}
                 thousandSeparator=","
+                step={1000}
                 value={property.expectedSalePrice}
                 onChange={(v) => onChange({ ...property, expectedSalePrice: typeof v === "number" ? v : 0 })}
               />
@@ -2010,6 +2023,7 @@ function PropertyAccountCard({
                 leftSection="£"
                 decimalScale={2}
                 thousandSeparator=","
+                step={1000}
                 value={property.sellingCosts}
                 onChange={(v) => onChange({ ...property, sellingCosts: typeof v === "number" ? v : 0 })}
               />

@@ -97,6 +97,7 @@ function CatalogFieldInput<TConfig>({
           leftSection="£"
           decimalScale={2}
           thousandSeparator=","
+          step={1000}
         />
       );
     case "growthRate":
