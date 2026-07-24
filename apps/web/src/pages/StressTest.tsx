@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
-import { PlanFileControls } from "../components/PlanFileControls.js";
+import { OpenFromFileButton } from "../components/OpenFromFileButton.js";
+import { PlanShareControls } from "../components/PlanShareControls.js";
 import { computeProjection } from "../projection.js";
 import {
   ageLabel,
@@ -85,11 +86,12 @@ export function StressTest() {
       <Group justify="space-between">
         <Title order={2}>Stress test</Title>
         <Group gap="xs">
-          <PlanFileControls />
-          <Button variant="subtle" size="xs" onClick={() => void navigate("/target-sensitivity")}>
+          <OpenFromFileButton />
+          <PlanShareControls scenario={scenario} />
+          <Button variant="default" size="xs" onClick={() => void navigate("/target-sensitivity")}>
             Target sensitivity
           </Button>
-          <Button variant="subtle" size="xs" onClick={() => void navigate("/")}>
+          <Button variant="default" size="xs" onClick={() => void navigate("/")}>
             Back to projection
           </Button>
           <AboutDialog />

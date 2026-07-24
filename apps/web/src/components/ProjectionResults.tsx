@@ -23,6 +23,7 @@ import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, R
 import { downloadCsv, projectionToCsv } from "../csvExport.js";
 import { formatMoney, formatMoneyRounded, formatNumber, formatPoundsMoney } from "../format.js";
 import { InfoTip } from "./InfoTip.js";
+import { PlanShareControls } from "./PlanShareControls.js";
 import { computeNetWorth, computeProjection } from "../projection.js";
 import { GAP_ACCOUNT_KIND_LABELS, computeShortfallGaps, type ShortfallGap } from "../shortfallGap.js";
 
@@ -1294,16 +1295,17 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       <Group justify="space-between">
         <Title order={2}>Your projection</Title>
         <Group gap="xs">
-          <Button variant="subtle" size="xs" onClick={() => downloadCsv(projectionToCsv(result))}>
+          <PlanShareControls scenario={scenario} />
+          <Button variant="default" size="xs" onClick={() => downloadCsv(projectionToCsv(result))}>
             Export report
           </Button>
-          <Button variant="subtle" size="xs" onClick={() => void navigate("/tax-breakdown")}>
+          <Button variant="default" size="xs" onClick={() => void navigate("/tax-breakdown")}>
             Tax breakdown
           </Button>
-          <Button variant="subtle" size="xs" onClick={() => void navigate("/stress-test")}>
+          <Button variant="default" size="xs" onClick={() => void navigate("/stress-test")}>
             Stress test
           </Button>
-          <Button variant="subtle" size="xs" onClick={() => void navigate("/target-sensitivity")}>
+          <Button variant="default" size="xs" onClick={() => void navigate("/target-sensitivity")}>
             Target sensitivity
           </Button>
         </Group>

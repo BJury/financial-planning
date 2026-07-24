@@ -12,7 +12,7 @@ export function ColorSchemeToggle() {
   const { toggleColorScheme } = useMantineColorScheme();
 
   return (
-    <Button variant="subtle" size="xs" onClick={toggleColorScheme}>
+    <Button variant="default" size="xs" onClick={toggleColorScheme}>
       {computedColorScheme === "dark" ? "Light mode" : "Dark mode"}
     </Button>
   );

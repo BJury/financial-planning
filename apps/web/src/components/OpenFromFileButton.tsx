@@ -1,41 +1,23 @@
-import { Button, Group, Text } from "@mantine/core";
+import { Button, Text } from "@mantine/core";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router";
-import { exportScenarioToFile, importScenarioFromFile } from "../persistence/fileExportImport.js";
+import { importScenarioFromFile } from "../persistence/fileExportImport.js";
 import { useScenarioStore } from "../state/store.js";
 
 /**
- * "Save to file" / "Open from file" (SPEC.md §9.2) — the secondary,
- * not-optional persistence path alongside autosave: the only way a plan
- * survives clearing browser data, moving to a new device, or leaving
- * private/incognito mode. Lives in the main planner's header so it's
- * reachable from wherever the user happens to be, per §9.2's "not left
- * undiscovered as a menu item."
+ * "Open from file" (SPEC.md §9.2) — the only way a plan survives clearing
+ * browser data, moving to a new device, or leaving private/incognito mode
+ * without a share link already in hand. Always visible in the main header,
+ * even before any plan exists, since it's the way *into* a plan for a
+ * returning user starting fresh on a new device. "Save to file" and
+ * "Share link" live with `ProjectionResults`'s other projection-scoped
+ * actions instead — see `PlanShareControls.tsx`.
  */
-/**
- * Derives a safe filename from the scenario's own (optional) `name` —
- * strips characters that are invalid across Windows/macOS/Linux
- * filesystems rather than just the ones any one OS happens to reject, so
- * the same export behaves the same way regardless of where it's later
- * opened. Falls back to the previous fixed filename when unset or when
- * sanitising leaves nothing usable.
- */
-function filenameForScenario(name: string | undefined): string {
-  const sanitised = (name ?? "").replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
-  return sanitised ? `${sanitised}.json` : "retirement-plan.json";
-}
-
-export function PlanFileControls() {
-  const scenario = useScenarioStore((s) => s.scenario);
+export function OpenFromFileButton() {
   const loadScenario = useScenarioStore((s) => s.loadScenario);
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
-
-  const handleExport = () => {
-    if (!scenario) return;
-    exportScenarioToFile(scenario, filenameForScenario(scenario.name));
-  };
 
   const handleFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -61,11 +43,8 @@ export function PlanFileControls() {
   };
 
   return (
-    <Group gap="xs" wrap="nowrap">
-      <Button variant="subtle" size="xs" onClick={handleExport} disabled={!scenario}>
-        Save to file
-      </Button>
-      <Button variant="subtle" size="xs" onClick={() => fileInputRef.current?.click()}>
+    <>
+      <Button variant="default" size="xs" onClick={() => fileInputRef.current?.click()}>
         Open from file
       </Button>
       <input
@@ -80,6 +59,6 @@ export function PlanFileControls() {
           {importError}
         </Text>
       )}
-    </Group>
+    </>
   );
 }

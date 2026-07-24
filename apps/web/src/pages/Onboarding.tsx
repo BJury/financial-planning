@@ -34,7 +34,7 @@ import { AgeOrDateInput, isoDateFromAge } from "../components/AgeOrDateInput.js"
 import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { InfoTip } from "../components/InfoTip.js";
-import { PlanFileControls } from "../components/PlanFileControls.js";
+import { OpenFromFileButton } from "../components/OpenFromFileButton.js";
 import { ProjectionResults } from "../components/ProjectionResults.js";
 import { QuickStartWizard, type QuickStartAnswers } from "../components/QuickStartWizard.js";
 import { formatNumber } from "../format.js";
@@ -835,7 +835,7 @@ export function Onboarding() {
           </Group>
           {/* Hidden below "sm" (the same breakpoint the Navbar itself collapses at) — with the burger, title, and plan name already competing for space on a narrow header, these four wrapped onto their own row(s) and, since AppShell.Header has a fixed height, overflowed straight over the page content below it. Moved into the mobile nav drawer instead (below), where there's always room. */}
           <Group gap="xs" visibleFrom="sm">
-            <PlanFileControls />
+            <OpenFromFileButton />
             <AboutDialog />
             <ColorSchemeToggle />
           </Group>
@@ -846,7 +846,7 @@ export function Onboarding() {
         <ScrollArea offsetScrollbars="y">
           <Stack gap="xl" pb="xl">
             <Group gap="xs" hiddenFrom="sm">
-              <PlanFileControls />
+              <OpenFromFileButton />
               <AboutDialog />
               <ColorSchemeToggle />
             </Group>
