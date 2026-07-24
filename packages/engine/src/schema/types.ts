@@ -329,7 +329,23 @@ export interface Scenario {
    * this is absent.
    */
   readonly projectionYears?: number;
+  /**
+   * Which chart lines ("Net worth", "Net income", a specific account's
+   * balance, ...) are ticked on the projection page's "Lines to show"
+   * selector — a view preference, never read by the engine itself, but
+   * stored on the plan (not just this browser's `localStorage`) so a
+   * shared link or exported file reproduces the same view rather than
+   * falling back to `DEFAULT_SELECTED_CHART_LINES` (SPEC.md §9.2).
+   * Optional, like `projectionYears` above, so every existing `Scenario`
+   * value keeps typechecking without modification. Stale entries (e.g. an
+   * account since deleted) are harmless — the UI only renders whichever
+   * of these keys still exist among the plan's current metrics.
+   */
+  readonly selectedChartLines?: readonly string[];
 }
 
 /** The UI's default projection length, and the engine's own fallback wherever `Scenario.projectionYears` is absent. */
 export const DEFAULT_PROJECTION_YEARS = 30;
+
+/** The UI's default chart-line selection, and its own fallback wherever `Scenario.selectedChartLines` is absent. */
+export const DEFAULT_SELECTED_CHART_LINES: readonly string[] = ["netWorth", "netIncome"];

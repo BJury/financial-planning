@@ -2,6 +2,7 @@ import {
   convertNominalToReal,
   convertRealToNominal,
   DEFAULT_PROJECTION_YEARS,
+  DEFAULT_SELECTED_CHART_LINES,
   DEFAULT_STATE_PENSION_AGE,
   deriveAnnualRepaymentMortgagePayment,
   getLatestConfirmedRuleSet,
@@ -262,6 +263,7 @@ interface OnboardingDrafts {
   readonly drawdownTargets: readonly IncomeSourceInstance[];
   readonly incomeSources: readonly IncomeSourceInstance[];
   readonly incomeDrains: readonly IncomeDrainInstance[];
+  readonly selectedChartLines: readonly string[];
 }
 
 /**
@@ -293,6 +295,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
       drawdownTargets: [createDefaultDrawdownTarget()],
       incomeSources: [],
       incomeDrains: [],
+      selectedChartLines: [...DEFAULT_SELECTED_CHART_LINES],
     };
   }
 
@@ -370,6 +373,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
     drawdownTargets: existingDrawdownTargets.length > 0 ? existingDrawdownTargets : [createDefaultDrawdownTarget()],
     incomeSources: scenario.incomeSources.filter((s) => s.type !== "targetDrawdownIncome"),
     incomeDrains: scenario.incomeDrains,
+    selectedChartLines: scenario.selectedChartLines ?? DEFAULT_SELECTED_CHART_LINES,
   };
 }
 
@@ -415,6 +419,14 @@ export function Onboarding() {
   const [drawdownTargets, setDrawdownTargets] = useState<IncomeSourceInstance[]>([...initial.drawdownTargets]);
   const [incomeSources, setIncomeSources] = useState<IncomeSourceInstance[]>([...initial.incomeSources]);
   const [incomeDrains, setIncomeDrains] = useState<IncomeDrainInstance[]>([...initial.incomeDrains]);
+  // A view preference, not a financial input — but stored on the plan
+  // itself (SPEC.md §9.2), not just this browser's `localStorage`, so
+  // "Save to file"/"Share link" reproduce the same chart selection rather
+  // than whoever opens it seeing their own browser's last choice (or the
+  // untouched default). Deliberately *not* debounced into `ProjectionResults`
+  // via `liveScenario`/`debouncedScenario` below — the MultiSelect itself
+  // stays instantly responsive, only the expensive projection recompute lags.
+  const [selectedChartLines, setSelectedChartLines] = useState<string[]>([...initial.selectedChartLines]);
   const [quickStartOpened, setQuickStartOpened] = useState(false);
 
   // "New" (SPEC.md §9.2's escape hatch for "I want to start over") clears
@@ -728,6 +740,7 @@ export function Onboarding() {
       inflationRate,
       upratingPolicy: { kind: "inflationLinked" },
       projectionYears,
+      selectedChartLines,
     };
   };
 
@@ -759,6 +772,7 @@ export function Onboarding() {
       drawdownTargets,
       incomeSources,
       incomeDrains,
+      selectedChartLines,
     ],
   );
 
@@ -1273,7 +1287,11 @@ export function Onboarding() {
       </AppShell.Navbar>
 
       <AppShell.Main>
-        <ProjectionResults scenario={debouncedScenario} />
+        <ProjectionResults
+          scenario={debouncedScenario}
+          selectedChartLines={selectedChartLines}
+          onSelectedChartLinesChange={setSelectedChartLines}
+        />
       </AppShell.Main>
     </AppShell>
     {quickStartOpened && (

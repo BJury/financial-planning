@@ -16,7 +16,6 @@ import {
   type YearLedgerRow,
 } from "@fp/engine";
 import { Alert, Button, Center, Group, MultiSelect, Select, Stack, Table, Text, Title, useComputedColorScheme } from "@mantine/core";
-import { useLocalStorage } from "@mantine/hooks";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -1087,11 +1086,20 @@ function ProjectionLineChart({
  * step — `scenario` is null only when required inputs (a date of
  * birth) haven't been filled in yet.
  */
-export function ProjectionResults({ scenario }: { readonly scenario: Scenario | null }) {
+export function ProjectionResults({
+  scenario,
+  selectedChartLines,
+  onSelectedChartLinesChange,
+}: {
+  readonly scenario: Scenario | null;
+  /** Owned by `Onboarding` (backed by `Scenario.selectedChartLines`, SPEC.md §9.2) — see the doc comment there for why this isn't local/`localStorage` state. */
+  readonly selectedChartLines: readonly string[];
+  readonly onSelectedChartLinesChange: (value: string[]) => void;
+}) {
   const navigate = useNavigate();
-  // A view preference, like `selectedMetrics` below — starts on "Tax
-  // year" so the table and chart both match their existing look until
-  // asked for something else.
+  // A view preference, like `selectedChartLines` — starts on "Tax year"
+  // so the table and chart both match their existing look until asked
+  // for something else.
   const [axisMode, setAxisMode] = useState<RowAxisMode>("taxYear");
   // "Their age" only makes sense with a second person — if one existed
   // when this was picked and was since removed (the "Plan for two
@@ -1102,20 +1110,12 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
       setAxisMode("taxYear");
     }
   }, [axisMode, scenario]);
-  // A view preference, not part of the financial plan — kept out of the
-  // Scenario itself, but persisted to localStorage (not just component
-  // state) so a chosen set of lines survives a page reload rather than
-  // resetting every time. Stale keys from a previous scenario's own
-  // accounts/income sources (e.g. an account since deleted) are harmless:
-  // `selectedVisibleMetrics` below only renders whichever of these keys
-  // still exist in the current `allMetrics`. "Net worth" seeds the
-  // balances chart the same way it always has; "Net income" seeds the
-  // income chart below it so that one isn't an empty placeholder by
-  // default either.
-  const [selectedMetrics, setSelectedMetrics] = useLocalStorage<string[]>({
-    key: "canistop:selected-chart-lines",
-    defaultValue: ["netWorth", "netIncome"],
-  });
+  // Stale entries from a previous scenario's own accounts/income sources
+  // (e.g. an account since deleted) are harmless: `selectedVisibleMetrics`
+  // below only renders whichever of these keys still exist in the current
+  // `allMetrics`.
+  const selectedMetrics = selectedChartLines;
+  const setSelectedMetrics = onSelectedChartLinesChange;
 
   const result = useMemo(() => (scenario ? computeProjection(scenario) : null), [scenario]);
   const keyFlags = useMemo(() => computeKeyFlags(result, scenario), [result, scenario]);
@@ -1234,7 +1234,11 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
     const newKeys = balanceMetrics.map((m) => m.key).filter((key) => !seenBalanceMetricKeysRef.current.has(key));
     if (newKeys.length === 0) return;
     for (const key of newKeys) seenBalanceMetricKeysRef.current.add(key);
-    setSelectedMetrics((prev) => [...new Set([...prev, ...newKeys])]);
+    setSelectedMetrics([...new Set([...selectedMetrics, ...newKeys])]);
+    // `selectedMetrics` deliberately isn't a dependency here — `seenBalanceMetricKeysRef`
+    // already guards against reprocessing (`newKeys` is empty once every current
+    // key has been seen), so adding it would only cause a harmless extra
+    // invocation each time the user changes their own selection, not a loop.
   }, [balanceMetrics]);
   // Recharts renders plain SVG and doesn't pick up Mantine's colour scheme on
   // its own — without this, axis/grid colours stay locked to a light-mode
@@ -1341,7 +1345,7 @@ export function ProjectionResults({ scenario }: { readonly scenario: Scenario | 
             ? [{ group: "Income sources", items: incomeSourceMetrics.map((m) => ({ value: m.key, label: m.label })) }]
             : []),
         ]}
-        value={selectedMetrics}
+        value={[...selectedMetrics]}
         onChange={setSelectedMetrics}
       />
 
