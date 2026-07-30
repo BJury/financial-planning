@@ -951,17 +951,17 @@ export function StochasticProjection() {
                   <YAxis tickFormatter={(v: number) => `${v}%`} width={50} />
                   <Tooltip content={HistogramTooltip} />
                   <Legend />
-                  <Bar dataKey="successPct" stackId="outcome" isAnimationActive={false} name="Never missed a year's target income">
+                  <Bar dataKey="successPct" stackId="outcome" fill={SUCCESS_COLOR} isAnimationActive={false} name="Never missed a year's target income">
                     {histogramData.map((bucket, i) => (
                       <Cell key={i} fill={SUCCESS_COLOR} fillOpacity={bucket.isOverflow ? 0.45 : 1} />
                     ))}
                   </Bar>
-                  <Bar dataKey="recoverablePct" stackId="outcome" isAnimationActive={false} name="Missed a year, but had money elsewhere">
+                  <Bar dataKey="recoverablePct" stackId="outcome" fill={RECOVERABLE_COLOR} isAnimationActive={false} name="Missed a year, but had money elsewhere">
                     {histogramData.map((bucket, i) => (
                       <Cell key={i} fill={RECOVERABLE_COLOR} fillOpacity={bucket.isOverflow ? 0.45 : 1} />
                     ))}
                   </Bar>
-                  <Bar dataKey="shortfallPct" stackId="outcome" isAnimationActive={false} name="Genuinely ran out of money">
+                  <Bar dataKey="shortfallPct" stackId="outcome" fill={SHORTFALL_COLOR} isAnimationActive={false} name="Genuinely ran out of money">
                     {histogramData.map((bucket, i) => (
                       <Cell key={i} fill={SHORTFALL_COLOR} fillOpacity={bucket.isOverflow ? 0.45 : 1} />
                     ))}
