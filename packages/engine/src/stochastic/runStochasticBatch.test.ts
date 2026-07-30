@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { poundsToPence } from "../money/pence.js";
 import { personId, type Household, type Person, type Scenario } from "../schema/types.js";
 import { ruleSet2026_27 } from "../taxYearData/2026-27.js";
+import type { DrawdownGuardrailPolicy } from "../drawdown/guytonKlinger.js";
 import { countUsEquityWindows } from "./sampleReturns.js";
 import { runStochasticBatch, SAMPLE_TRAJECTORY_COUNT } from "./runStochasticBatch.js";
 
@@ -265,6 +266,65 @@ describe("runStochasticBatch — percentile aggregation", () => {
     const sampledOriginalIndexSet = new Set(result.sampledRunIndices);
     const overlap = [...worstDecile].filter((i) => sampledOriginalIndexSet.has(i));
     expect(overlap.length).toBeGreaterThan(0);
+  });
+});
+
+describe("runStochasticBatch — Guyton-Klinger guardrails", () => {
+  const POLICY: DrawdownGuardrailPolicy = { cutTriggerPct: 0.2, cutAmountPct: 0.1, raiseTriggerPct: 0.2, raiseAmountPct: 0.1 };
+
+  function makeDrawdownScenario(annualGrowthRate: number): Scenario {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 85 };
+    const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
+    return {
+      schemaVersion: 1,
+      household,
+      accounts: [{ kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(1000000), annualGrowthRate }],
+      incomeSources: [
+        { id: "target1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 40 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+  }
+
+  it("incomeByYearPercentiles and sampleGuardrailEvents are always populated, even when guardrails aren't requested", () => {
+    const result = runStochasticBatch({ scenario: makeScenario(), confirmedRuleSet: ruleSet2026_27, numberOfYears: 5, method: "montecarlo", runCount: 20, seed: 3 });
+    expect(result.incomeByYearPercentiles).toHaveLength(5);
+    expect(result.guardrailStats).toBeUndefined();
+    expect(result.sampleGuardrailEvents).toHaveLength(result.sampleTrajectories.length);
+    for (const events of result.sampleGuardrailEvents) expect(events.every((e) => e === "none")).toBe(true);
+  });
+
+  it("guardrailStats is only populated when guardrails were actually requested, and reflects real cut activity for a shrinking scenario", () => {
+    const options = {
+      scenario: makeDrawdownScenario(-0.06),
+      confirmedRuleSet: ruleSet2026_27,
+      numberOfYears: 10,
+      method: "montecarlo" as const,
+      runCount: 50,
+      seed: 5,
+    };
+    const withoutGuardrails = runStochasticBatch(options);
+    const withGuardrails = runStochasticBatch({ ...options, guardrails: POLICY });
+
+    expect(withoutGuardrails.guardrailStats).toBeUndefined();
+    expect(withGuardrails.guardrailStats).toBeDefined();
+    expect(withGuardrails.guardrailStats?.cutFraction ?? 0).toBeGreaterThan(0);
+  });
+
+  it("guardrails don't increase the overall failure rate on a marginal, shrinking scenario (same seed, otherwise identical options)", () => {
+    const options = {
+      scenario: makeDrawdownScenario(-0.04),
+      confirmedRuleSet: ruleSet2026_27,
+      numberOfYears: 15,
+      method: "montecarlo" as const,
+      runCount: 100,
+      seed: 7,
+    };
+    const baseline = runStochasticBatch(options);
+    const guarded = runStochasticBatch({ ...options, guardrails: POLICY });
+    expect(guarded.successRate).toBeGreaterThanOrEqual(baseline.successRate);
   });
 });
 

@@ -10,17 +10,36 @@ import {
   MONTE_CARLO_DEFAULT_PRESETS,
   penceToPounds,
   RISK_PROFILE_PRESETS,
+  subtractPence,
+  sumPence,
   zeroPence,
   type Account,
   type AssetAllocation,
   type AssetClass,
+  type DrawdownGuardrailPolicy,
   type FinalOutcome,
   type Owner,
   type Person,
   type StochasticBatchResult,
   type StochasticMethod,
 } from "@fp/engine";
-import { Accordion, Card, Alert, Anchor, Button, Group, NumberInput, Progress, Select, Stack, Switch, Table, Text, Title } from "@mantine/core";
+import {
+  Accordion,
+  Card,
+  Alert,
+  Anchor,
+  Button,
+  Group,
+  NumberInput,
+  Progress,
+  SegmentedControl,
+  Select,
+  Stack,
+  Switch,
+  Table,
+  Text,
+  Title,
+} from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 import {
@@ -91,6 +110,48 @@ function ConfidenceTooltip({ active, payload, label }: TooltipProps<number, stri
         <Text size="xs" c="orange">
           Deterministic: {formatMoneyRounded(row.deterministic)}
         </Text>
+        <Text size="xs">90th percentile: {formatMoneyRounded(row.p90)}</Text>
+        <Text size="xs">85th percentile: {formatMoneyRounded(row.p85)}</Text>
+        <Text size="xs">75th percentile: {formatMoneyRounded(row.p75)}</Text>
+        <Text size="xs" fw={700} c="blue">
+          Median: {formatMoneyRounded(row.p50)}
+        </Text>
+        <Text size="xs">25th percentile: {formatMoneyRounded(row.p25)}</Text>
+        <Text size="xs">15th percentile: {formatMoneyRounded(row.p15)}</Text>
+        <Text size="xs">10th percentile: {formatMoneyRounded(row.p10)}</Text>
+      </Stack>
+    </Card>
+  );
+}
+
+interface IncomeChartRow {
+  readonly year: string;
+  readonly p10: number;
+  readonly p15: number;
+  readonly p25: number;
+  readonly p50: number;
+  readonly p75: number;
+  readonly p85: number;
+  readonly p90: number;
+  readonly deterministic: number;
+}
+
+/** Same reasoning as `ConfidenceTooltip` — reads the six percentile figures directly off the underlying row rather than the default tooltip's confusing raw per-series dump. */
+function IncomeConfidenceTooltip({ active, payload, label }: TooltipProps<number, string>) {
+  if (!active || !payload || payload.length === 0) return null;
+  const row = payload[0]?.payload as IncomeChartRow | undefined;
+  if (!row) return null;
+  return (
+    <Card withBorder padding="xs" shadow="md">
+      <Stack gap={2}>
+        <Text size="sm" fw={700}>
+          {label}
+        </Text>
+        {row.deterministic > 0 && (
+          <Text size="xs" c="orange">
+            Deterministic: {formatMoneyRounded(row.deterministic)}
+          </Text>
+        )}
         <Text size="xs">90th percentile: {formatMoneyRounded(row.p90)}</Text>
         <Text size="xs">85th percentile: {formatMoneyRounded(row.p85)}</Text>
         <Text size="xs">75th percentile: {formatMoneyRounded(row.p75)}</Text>
@@ -563,6 +624,15 @@ export function StochasticProjection() {
 
   const [method, setMethod] = useState<StochasticMethod>("historical");
   const [runCount, setRunCount] = useState("500");
+  const [withdrawalStrategy, setWithdrawalStrategy] = useState<"fixed" | "guytonKlinger">("fixed");
+  // Guyton-Klinger guardrail parameters, stored as whole percentages (matching the NumberInput
+  // display) and converted to fractions only when building the request — the commonly-cited G-K
+  // defaults (20%/10%/20%/10%). Page-local runtime state only, like `method`/`runCount` above —
+  // never persisted to the saved Scenario.
+  const [cutTriggerPct, setCutTriggerPct] = useState(20);
+  const [cutAmountPct, setCutAmountPct] = useState(10);
+  const [raiseTriggerPct, setRaiseTriggerPct] = useState(20);
+  const [raiseAmountPct, setRaiseAmountPct] = useState(10);
   const [axisMode, setAxisMode] = useState<AxisMode>("taxYear");
   const [showSamplePaths, setShowSamplePaths] = useState(false);
   const [yAxisScaleMode, setYAxisScaleMode] = useState<"p90" | "deterministic2x" | "deterministic4x">("p90");
@@ -590,6 +660,10 @@ export function StochasticProjection() {
   const eligibleAccounts = scenario.accounts.filter(isStochasticEligible);
   const updateAccountAllocation = (accountId: string, allocation: AssetAllocation) => {
     updateScenario((s) => ({ ...s, accounts: s.accounts.map((a) => (a.id === accountId ? { ...a, assetAllocation: allocation } : a)) }));
+    // Changing what an account is invested in makes the current result stale — it was simulated
+    // against the old mix, so keeping it displayed would silently mislead rather than prompt a re-run.
+    setResult(null);
+    setSelectedBucketIndex(null);
   };
 
   // Mirrors runStochasticBatch.ts's own usesUsEquities check — Historical bootstrap replaces the
@@ -600,6 +674,16 @@ export function StochasticProjection() {
     return allocation.equities > 0 && allocation.equityMarket === "us";
   });
   const runCountOverridden = method === "historical" && usesUsEquities;
+
+  const guardrailPolicy: DrawdownGuardrailPolicy | undefined =
+    withdrawalStrategy === "guytonKlinger"
+      ? {
+          cutTriggerPct: cutTriggerPct / 100,
+          cutAmountPct: cutAmountPct / 100,
+          raiseTriggerPct: raiseTriggerPct / 100,
+          raiseAmountPct: raiseAmountPct / 100,
+        }
+      : undefined;
 
   const runSimulation = () => {
     workerRef.current?.terminate();
@@ -625,7 +709,14 @@ export function StochasticProjection() {
       }
     };
 
-    const request: StochasticWorkerRequest = { scenario, confirmedRuleSet, numberOfYears, method, runCount: totalRuns };
+    const request: StochasticWorkerRequest = {
+      scenario,
+      confirmedRuleSet,
+      numberOfYears,
+      method,
+      runCount: totalRuns,
+      ...(guardrailPolicy ? { guardrails: guardrailPolicy } : {}),
+    };
     worker.postMessage(request);
   };
 
@@ -665,6 +756,43 @@ export function StochasticProjection() {
   });
 
   const finalYear = chartData.at(-1);
+
+  // The deterministic projection's own drawdown income, per year — guardrails never touch the
+  // deterministic engine (they're a Confidence-page-only, stochastic-only mechanic), so this is
+  // exactly the flat/phased target income the plan is built around, useful as a "what the old fixed
+  // plan would have drawn" reference specifically when guardrails are actually diverging from it.
+  // Only computed under Guyton-Klinger mode — under Fixed, the median line already *is* this figure
+  // (bar shortfall-driven variance), so a second overlapping line would add nothing.
+  const deterministicIncomeByYear =
+    result && withdrawalStrategy === "guytonKlinger"
+      ? computeProjection(scenario).rows.map((row) =>
+          row.perPerson.reduce((sum, p) => {
+            const received = sumPence([p.grossIncome, p.rentalProfitIncome, p.statePensionIncome, p.drawdownNetAchieved, p.taxFreeIncome, p.mortgageInterestCredit, p.propertySaleNetProceeds]);
+            const deducted = sumPence([p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax, p.otherExpenses]);
+            return sum + penceToPounds(subtractPence(received, deducted));
+          }, 0),
+        )
+      : [];
+
+  // Total net income each year, by percentile — every income source (earned, rental, State
+  // Pension, drawdown, tax-free, mortgage interest credit, property sale proceeds) less tax and
+  // expenses, same as ProjectionResults.tsx's own "Net income" metric — always populated (real
+  // figures, not a placeholder) regardless of withdrawal strategy, so the chart shows genuine data
+  // under a flat target too (e.g. any variability caused by shortfalls), not just under guardrails.
+  const incomeChartData = (result?.incomeByYearPercentiles ?? []).map((p, i) => ({
+    year: xAxisLabelForIndex(i, axisMode, scenario.household.people, startCalendarYear),
+    p10: penceToPounds(p.p10),
+    p15: penceToPounds(p.p15),
+    p25: penceToPounds(p.p25),
+    p50: penceToPounds(p.p50),
+    p75: penceToPounds(p.p75),
+    p85: penceToPounds(p.p85),
+    p90: penceToPounds(p.p90),
+    outerBand: penceToPounds(p.p90) - penceToPounds(p.p10),
+    innerBand: penceToPounds(p.p75) - penceToPounds(p.p25),
+    deterministic: deterministicIncomeByYear[i] ?? 0,
+  }));
+
   const histogramData = result ? buildHistogram(result.finalOutcomes, result.runCount) : [];
   const percentileHistogramData = result ? buildPercentileHistogram(result.finalOutcomes) : [];
 
@@ -789,6 +917,65 @@ export function StochasticProjection() {
         </Text>
       )}
 
+      <Stack gap="xs">
+        <div>
+          <Text size="sm" fw={600} mb={4}>
+            Withdrawal strategy
+          </Text>
+          <SegmentedControl
+            value={withdrawalStrategy}
+            onChange={(v) => setWithdrawalStrategy(v === "guytonKlinger" ? "guytonKlinger" : "fixed")}
+            data={[
+              { value: "fixed", label: "Fixed target income" },
+              { value: "guytonKlinger", label: "Guyton-Klinger guardrails" },
+            ]}
+          />
+        </div>
+        {withdrawalStrategy === "guytonKlinger" && (
+          <>
+            <Text size="xs" c="dimmed" maw={640}>
+              Each phase&rsquo;s own target income (set on the main plan) still anchors the starting withdrawal rate —
+              these guardrails only govern how it moves from there: cut spending when the withdrawal rate drifts too
+              far above where it started, raise it when it drifts too far below.
+            </Text>
+            <Group gap="md">
+              <NumberInput
+                label="Cut trigger"
+                description="% above baseline rate"
+                rightSection="%"
+                value={cutTriggerPct}
+                onChange={(v) => setCutTriggerPct(typeof v === "number" ? v : 20)}
+                w={150}
+              />
+              <NumberInput
+                label="Cut amount"
+                description="size of the cut"
+                rightSection="%"
+                value={cutAmountPct}
+                onChange={(v) => setCutAmountPct(typeof v === "number" ? v : 10)}
+                w={150}
+              />
+              <NumberInput
+                label="Raise trigger"
+                description="% below baseline rate"
+                rightSection="%"
+                value={raiseTriggerPct}
+                onChange={(v) => setRaiseTriggerPct(typeof v === "number" ? v : 20)}
+                w={150}
+              />
+              <NumberInput
+                label="Raise amount"
+                description="size of the raise"
+                rightSection="%"
+                value={raiseAmountPct}
+                onChange={(v) => setRaiseAmountPct(typeof v === "number" ? v : 10)}
+                w={150}
+              />
+            </Group>
+          </>
+        )}
+      </Stack>
+
       {status === "running" && (
         <Stack gap={4}>
           <Progress value={progress.total > 0 ? (progress.completed / progress.total) * 100 : 0} animated />
@@ -827,6 +1014,13 @@ export function StochasticProjection() {
                   </>
                 );
               })()}
+            {result.guardrailStats && (
+              <>
+                {" "}
+                The guardrails cut spending in <strong>{formatPercent(result.guardrailStats.cutFraction)}</strong> of simulated years, and
+                raised it in <strong>{formatPercent(result.guardrailStats.raiseFraction)}</strong>.
+              </>
+            )}
           </Alert>
           {finalYear && (
             <Text size="sm" c="dimmed">
@@ -932,6 +1126,47 @@ export function StochasticProjection() {
               squashing everything else flat.
             </Text>
           )}
+
+          <Stack gap="xs">
+            <Text fw={600}>Net income, by percentile</Text>
+            <Text size="xs" c="dimmed">
+              Every income source — salary, State Pension, rental, drawdown, and the rest — less tax and outgoings; the
+              same &ldquo;Net income&rdquo; figure the main projection page tracks, just shown as a spread across every
+              simulated market history instead of one line.{" "}
+              {withdrawalStrategy === "guytonKlinger"
+                ? "Unlike net worth, this isn't just an outcome — it's what the guardrails are actively steering, year by year, based on each run's own portfolio path."
+                : "Under a fixed target, most runs draw the same real amount every year; the spread below comes from runs that couldn't fully meet it (a shortfall)."}
+            </Text>
+            <div style={{ width: "100%", height: 280 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={incomeChartData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="year" />
+                  <YAxis tickFormatter={(v: number) => formatMoneyRounded(v)} width={90} />
+                  <Tooltip content={IncomeConfidenceTooltip} />
+                  <Legend />
+                  <Area dataKey="p10" stackId="outer" stroke="none" fill="transparent" isAnimationActive={false} legendType="none" />
+                  <Area dataKey="outerBand" stackId="outer" stroke="none" fill={CHART_COLOR} fillOpacity={0.12} isAnimationActive={false} name="10th-90th percentile" />
+                  <Area dataKey="p25" stackId="inner" stroke="none" fill="transparent" isAnimationActive={false} legendType="none" />
+                  <Area dataKey="innerBand" stackId="inner" stroke="none" fill={CHART_COLOR} fillOpacity={0.22} isAnimationActive={false} name="25th-75th percentile" />
+                  <Line dataKey="p85" stroke={CHART_COLOR} strokeWidth={1} strokeDasharray="2 3" dot={false} isAnimationActive={false} name="85th percentile" />
+                  <Line dataKey="p15" stroke={CHART_COLOR} strokeWidth={1} strokeDasharray="2 3" dot={false} isAnimationActive={false} name="15th percentile" />
+                  <Line dataKey="p50" stroke={CHART_COLOR} strokeWidth={2} dot={false} isAnimationActive={false} name="Median" />
+                  {withdrawalStrategy === "guytonKlinger" && (
+                    <Line
+                      dataKey="deterministic"
+                      stroke={DETERMINISTIC_COLOR}
+                      strokeWidth={2}
+                      strokeDasharray="6 4"
+                      dot={false}
+                      isAnimationActive={false}
+                      name="Deterministic (fixed target)"
+                    />
+                  )}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </Stack>
 
           <Stack gap="xs">
             <Text fw={600}>Distribution of outcomes at the end of the plan</Text>

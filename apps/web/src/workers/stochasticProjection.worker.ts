@@ -1,5 +1,5 @@
 import { runStochasticBatch, type Scenario, type StochasticBatchResult, type StochasticMethod } from "@fp/engine";
-import type { TaxYearRuleSet } from "@fp/engine";
+import type { DrawdownGuardrailPolicy, TaxYearRuleSet } from "@fp/engine";
 
 /**
  * A single `runProjection` call is ~3ms (SPEC.md §9.7); a stochastic batch
@@ -15,6 +15,8 @@ export interface StochasticWorkerRequest {
   readonly method: StochasticMethod;
   readonly runCount: number;
   readonly seed?: number;
+  /** Opt-in Guyton-Klinger dynamic withdrawal guardrails — omitted reproduces today's flat-target behaviour exactly. */
+  readonly guardrails?: DrawdownGuardrailPolicy;
 }
 
 export type StochasticWorkerMessage =
@@ -41,7 +43,7 @@ const workerScope = self as unknown as {
 const PROGRESS_REPORT_INTERVAL = 25;
 
 workerScope.onmessage = (event) => {
-  const { scenario, confirmedRuleSet, numberOfYears, method, runCount, seed } = event.data;
+  const { scenario, confirmedRuleSet, numberOfYears, method, runCount, seed, guardrails } = event.data;
 
   const result = runStochasticBatch({
     scenario,
@@ -50,6 +52,7 @@ workerScope.onmessage = (event) => {
     method,
     runCount,
     ...(seed !== undefined ? { seed } : {}),
+    ...(guardrails !== undefined ? { guardrails } : {}),
     onProgress: (completed, total) => {
       if (completed % PROGRESS_REPORT_INTERVAL === 0 || completed === total) {
         workerScope.postMessage({ kind: "progress", completed, total });

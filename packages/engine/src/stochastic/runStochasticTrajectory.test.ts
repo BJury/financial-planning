@@ -7,6 +7,7 @@ import type { AssetClass } from "./assetClasses.js";
 
 import "../catalog/incomeSources/salary.js";
 import "../catalog/incomeSources/targetDrawdownIncome.js";
+import "../catalog/incomeSources/statePension.js";
 
 const PERSON_ID = personId("p1");
 
@@ -166,5 +167,68 @@ describe("runStochasticTrajectory", () => {
     const withExtreme = runStochasticTrajectory(withoutAllocation, ruleSet2026_27, 2, () => extremeReturns);
     const withFlat = runStochasticTrajectory(withoutAllocation, ruleSet2026_27, 2, () => flatReturns);
     expect(withExtreme.netWorthByYear[1]).toBeGreaterThan(withFlat.netWorthByYear[1] ?? 0);
+  });
+
+  it("incomeByYear reflects total net income, not just the drawdown withdrawal — adding a State Pension source raises it when the ISA alone can't cover the full target", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1958-01-01", targetRetirementAge: 67, projectionEndAge: 90, statePensionAge: 66 };
+    const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
+    const baseScenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      // A small ISA — too little to fund the £50,000 target alone either way, so it's the binding
+      // constraint on drawdown in both scenarios below; State Pension income isn't balance-limited,
+      // so adding it can only add to total income, never merely substitute for drawdown.
+      accounts: [{ kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(20000), annualGrowthRate: 0 }],
+      incomeSources: [
+        { id: "target1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 40 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+    const withStatePension: Scenario = {
+      ...baseScenario,
+      incomeSources: [
+        ...baseScenario.incomeSources,
+        { id: "sp1", type: "statePension", owner: PERSON_ID, config: { annualForecastAmount: poundsToPence(11500) } },
+      ],
+    };
+
+    const without = runStochasticTrajectory(baseScenario, ruleSet2026_27, 3, () => flatReturns);
+    const withSp = runStochasticTrajectory(withStatePension, ruleSet2026_27, 3, () => flatReturns);
+
+    // Under the bug this guards against (summing only drawdownNetAchieved), adding State Pension
+    // would have left incomeByYear unchanged (still capped at the tiny ISA balance) rather than
+    // reflecting the extra £11,500 actually received.
+    expect(withSp.incomeByYear[0]).toBeGreaterThan(without.incomeByYear[0] ?? 0);
+  });
+
+  it("incomeByYear and guardrailEventByYear are always populated, one entry per simulated year, even when drawdownGuardrails is omitted", () => {
+    const result = runStochasticTrajectory(makeScenario(), ruleSet2026_27, 5, () => flatReturns);
+    expect(result.incomeByYear).toHaveLength(5);
+    expect(result.guardrailEventByYear).toHaveLength(5);
+    expect(result.guardrailEventByYear.every((e) => e === "none")).toBe(true);
+  });
+
+  it("guardrailEventByYear reports a cut once a shrinking pool drifts the withdrawal rate past the policy's cut trigger", () => {
+    const person: Person = { id: PERSON_ID, dateOfBirth: "1980-06-15", targetRetirementAge: 67, projectionEndAge: 90 };
+    const household: Household = { people: [person], relationshipStatus: null, targetIncomeMode: "perPerson" };
+    const scenario: Scenario = {
+      schemaVersion: 1,
+      household,
+      accounts: [{ kind: "isa", id: "isa1", owner: PERSON_ID, isaType: "stocksAndShares", currentBalance: poundsToPence(1000000), annualGrowthRate: 0 }],
+      incomeSources: [
+        { id: "target1", type: "targetDrawdownIncome", owner: PERSON_ID, config: { targetNetAnnualIncome: poundsToPence(50000), startAge: 40 } },
+      ],
+      incomeDrains: [],
+      inflationRate: 0.025,
+      upratingPolicy: { kind: "inflationLinked" },
+    };
+    // A uniform -5% across every asset class blends to -5% regardless of allocation weights — same shrinking pool as `runProjection.drawdownGuardrails.test.ts`'s hand-verified cut-at-year-2 scenario.
+    const shrinkingReturns: Record<AssetClass, readonly number[]> = { usEquities: [-0.05, -0.05, -0.05], ukEquities: [-0.05, -0.05, -0.05], bonds: [-0.05, -0.05, -0.05], cash: [-0.05, -0.05, -0.05] };
+    const policy = { cutTriggerPct: 0.2, cutAmountPct: 0.1, raiseTriggerPct: 0.2, raiseAmountPct: 0.1 };
+    const result = runStochasticTrajectory(scenario, ruleSet2026_27, 3, () => shrinkingReturns, policy);
+    expect(result.guardrailEventByYear[2]).toBe("cut");
+    expect(result.incomeByYear[2]).toBe(poundsToPence(45000));
   });
 });

@@ -1,11 +1,13 @@
 import { pence, type Pence } from "../money/pence.js";
 import { DEFAULT_ASSET_ALLOCATION, type Account, type Scenario } from "../schema/types.js";
 import type { TaxYearRuleSet } from "../taxYearData/types.js";
+import type { DrawdownGuardrailPolicy } from "../drawdown/guytonKlinger.js";
 import { monteCarloPresetsWithMean, type AssetClass, type AssetClassPreset } from "./assetClasses.js";
 import { createPrng, sampleMonteCarloTrajectory, sampleUkTrajectory, walkUsEquityWindows, type Prng } from "./sampleReturns.js";
 import { isStochasticEligible, runStochasticTrajectory, type ShortfallSeverity, type StochasticTrajectorySummary } from "./runStochasticTrajectory.js";
 
 export type { ShortfallSeverity } from "./runStochasticTrajectory.js";
+export type { DrawdownGuardrailPolicy } from "../drawdown/guytonKlinger.js";
 
 export type StochasticMethod = "historical" | "montecarlo";
 
@@ -82,6 +84,24 @@ export interface StochasticBatchResult {
    * one directly.
    */
   readonly sampledRunIndices: readonly number[];
+  /** One entry per simulated year, same shape as `netWorthPercentilesByYear` but over total net income (`StochasticTrajectorySummary.incomeByYear` — every income source less tax and expenses, not just the drawdown withdrawal) rather than net worth — always populated, regardless of whether `guardrails` was requested. */
+  readonly incomeByYearPercentiles: readonly YearPercentiles[];
+  /**
+   * Guyton-Klinger's cut/raise events for the exact same sampled runs as
+   * `sampleTrajectories`/`sampleShortfallYears`, in the same order —
+   * lets a caller mark *which* year(s) on a plotted income line actually
+   * triggered a guardrail. All `"none"` (never absent) when `guardrails`
+   * wasn't requested.
+   */
+  readonly sampleGuardrailEvents: readonly (readonly ("none" | "cut" | "raise")[])[];
+  /**
+   * Fraction (0-1) of run-years (not runs — a single run can have several
+   * cut/raise years) that triggered each rule, across the *full* batch, not
+   * just the sampled subset above. `undefined` whenever `guardrails` wasn't
+   * requested — a caller should treat "not present" as "not applicable",
+   * not as "0%".
+   */
+  readonly guardrailStats?: { readonly cutFraction: number; readonly raiseFraction: number };
 }
 
 export interface StochasticBatchOptions {
@@ -95,6 +115,13 @@ export interface StochasticBatchOptions {
   readonly monteCarloPresets?: Record<AssetClass, AssetClassPreset>;
   /** Called after every completed run, so a caller (e.g. the web worker) can report progress without waiting for the whole batch. */
   readonly onProgress?: (completed: number, total: number) => void;
+  /**
+   * Opt-in Guyton-Klinger dynamic withdrawal guardrails (the Confidence
+   * page's alternative to a flat target income) — omitted (the default for
+   * every existing caller) reproduces today's behaviour exactly, passed
+   * straight through to `runStochasticTrajectory`/`runProjection`.
+   */
+  readonly guardrails?: DrawdownGuardrailPolicy;
 }
 
 function percentile(sorted: readonly Pence[], p: number): Pence {
@@ -102,8 +129,12 @@ function percentile(sorted: readonly Pence[], p: number): Pence {
   return sorted[index] ?? pence(0);
 }
 
-function percentilesForYear(summaries: readonly StochasticTrajectorySummary[], yearIndex: number): YearPercentiles {
-  const values = [...summaries.map((s) => s.netWorthByYear[yearIndex]).filter((v): v is Pence => v !== undefined)].sort((a, b) => a - b);
+function percentilesForYear(
+  summaries: readonly StochasticTrajectorySummary[],
+  yearIndex: number,
+  accessor: (summary: StochasticTrajectorySummary) => Pence | undefined = (s) => s.netWorthByYear[yearIndex],
+): YearPercentiles {
+  const values = [...summaries.map(accessor).filter((v): v is Pence => v !== undefined)].sort((a, b) => a - b);
   return {
     p10: percentile(values, 0.1),
     p15: percentile(values, 0.15),
@@ -194,11 +225,16 @@ export function runStochasticBatch(options: StochasticBatchOptions): StochasticB
               // scenario-wide figure unrelated to what the user actually set.
               options.monteCarloPresets ?? monteCarloPresetsWithMean(account.annualGrowthRate),
             );
-    summaries.push(runStochasticTrajectory(options.scenario, options.confirmedRuleSet, options.numberOfYears, sampledReturnsForAccount));
+    summaries.push(
+      runStochasticTrajectory(options.scenario, options.confirmedRuleSet, options.numberOfYears, sampledReturnsForAccount, options.guardrails),
+    );
     options.onProgress?.(i + 1, effectiveRunCount);
   }
 
   const netWorthPercentilesByYear = Array.from({ length: options.numberOfYears }, (_, yearIndex) => percentilesForYear(summaries, yearIndex));
+  const incomeByYearPercentiles = Array.from({ length: options.numberOfYears }, (_, yearIndex) =>
+    percentilesForYear(summaries, yearIndex, (s) => s.incomeByYear[yearIndex]),
+  );
   const successRate = summaries.length === 0 ? 0 : summaries.filter((s) => !s.hadShortfall).length / summaries.length;
   const finalOutcomes = summaries.map((s) => ({ netWorth: s.netWorthByYear.at(-1) ?? pence(0), hadShortfall: s.hadShortfall, shortfallSeverity: s.shortfallSeverity }));
   // The exhaustive US-equities backtest keeps every trajectory (see SAMPLE_TRAJECTORY_COUNT's doc
@@ -208,6 +244,28 @@ export function runStochasticBatch(options: StochasticBatchOptions): StochasticB
   const sampledRunIndices = usWindows ? summaries.map((_, i) => i) : stratifiedSampleIndices(summaries, SAMPLE_TRAJECTORY_COUNT);
   const sampleTrajectories = sampledRunIndices.map((i) => summaries[i]?.netWorthByYear ?? []);
   const sampleShortfallYears = sampledRunIndices.map((i) => summaries[i]?.shortfallByYear ?? []);
+  const sampleGuardrailEvents = sampledRunIndices.map((i) => summaries[i]?.guardrailEventByYear ?? []);
 
-  return { netWorthPercentilesByYear, successRate, runCount: effectiveRunCount, finalOutcomes, sampleTrajectories, sampleShortfallYears, sampledRunIndices };
+  let guardrailStats: StochasticBatchResult["guardrailStats"];
+  if (options.guardrails) {
+    const allEvents = summaries.flatMap((s) => s.guardrailEventByYear);
+    const totalRunYears = allEvents.length || 1;
+    guardrailStats = {
+      cutFraction: allEvents.filter((e) => e === "cut").length / totalRunYears,
+      raiseFraction: allEvents.filter((e) => e === "raise").length / totalRunYears,
+    };
+  }
+
+  return {
+    netWorthPercentilesByYear,
+    successRate,
+    runCount: effectiveRunCount,
+    finalOutcomes,
+    sampleTrajectories,
+    sampleShortfallYears,
+    sampledRunIndices,
+    incomeByYearPercentiles,
+    sampleGuardrailEvents,
+    ...(guardrailStats ? { guardrailStats } : {}),
+  };
 }

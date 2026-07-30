@@ -1,7 +1,8 @@
-import { isNegative, subtractPence, sumPence, zeroPence, type Pence } from "../money/pence.js";
+import { addPence, isNegative, subtractPence, sumPence, zeroPence, type Pence } from "../money/pence.js";
 import { runProjection } from "../simulation/runProjection.js";
 import { DEFAULT_ASSET_ALLOCATION, type Account, type Scenario } from "../schema/types.js";
 import { startCalendarYearOf, type TaxYearRuleSet } from "../taxYearData/types.js";
+import type { DrawdownGuardrailPolicy } from "../drawdown/guytonKlinger.js";
 import type { AssetClass } from "./assetClasses.js";
 import { annualReturnViaDailyRate, daysInTaxYear } from "./dailyRate.js";
 
@@ -78,6 +79,22 @@ export interface StochasticTrajectorySummary {
    * every year."
    */
   readonly shortfallSeverity: ShortfallSeverity;
+  /**
+   * Total net income (summed across `perPerson`) per simulated year — every
+   * income source (earned, rental, State Pension, drawdown, tax-free,
+   * mortgage interest credit, property sale proceeds) less tax and
+   * expenses, the same "Net income" figure `apps/web/components/ProjectionResults.tsx`'s
+   * own chart/table show for the deterministic projection — deliberately
+   * *not* just `drawdownNetAchieved`, which alone omits State Pension and
+   * every other automatic income source netted off before sizing the
+   * withdrawal (`adjustDrawdownTargetForAutomaticIncome`). Always
+   * populated, regardless of whether `drawdownGuardrails` was supplied, so
+   * a caller can chart this under a flat target too, not just under
+   * guardrails.
+   */
+  readonly incomeByYear: readonly Pence[];
+  /** This run's worst Guyton-Klinger event (`"cut"` beats `"raise"` beats `"none"`) across every person that year — all `"none"` when `drawdownGuardrails` wasn't supplied. */
+  readonly guardrailEventByYear: readonly ("none" | "cut" | "raise")[];
 }
 
 /**
@@ -104,6 +121,7 @@ export function runStochasticTrajectory(
   confirmedRuleSet: TaxYearRuleSet,
   numberOfYears: number,
   sampledReturnsForAccount: (account: Account) => Record<AssetClass, readonly number[]>,
+  drawdownGuardrails?: DrawdownGuardrailPolicy,
 ): StochasticTrajectorySummary {
   // Each blended year's return is routed through an explicit daily rate
   // (see dailyRate.ts) rather than applied as a single annual figure
@@ -120,7 +138,7 @@ export function runStochasticTrajectory(
     ]),
   );
 
-  const result = runProjection(scenario, confirmedRuleSet, numberOfYears, growthRateOverrides);
+  const result = runProjection(scenario, confirmedRuleSet, numberOfYears, growthRateOverrides, drawdownGuardrails);
 
   const netWorthByYear = result.rows.map((row) =>
     subtractPence(sumPence([...row.accountBalances.values()]), sumPence([...row.mortgageBalanceByPropertyId.values()])),
@@ -133,6 +151,21 @@ export function runStochasticTrajectory(
     : hadShortfall
       ? "recoverable"
       : "none";
+  // Mirrors ProjectionResults.tsx's own "Net income" chart metric exactly, so this stochastic figure
+  // is directly comparable to what the deterministic projection page shows for the same scenario.
+  const incomeByYear = result.rows.map((row) =>
+    row.perPerson.reduce((sum, p) => {
+      const received = sumPence([p.grossIncome, p.rentalProfitIncome, p.statePensionIncome, p.drawdownNetAchieved, p.taxFreeIncome, p.mortgageInterestCredit, p.propertySaleNetProceeds]);
+      const deducted = sumPence([p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax, p.otherExpenses]);
+      return addPence(sum, subtractPence(received, deducted));
+    }, zeroPence()),
+  );
+  const guardrailEventByYear: readonly ("none" | "cut" | "raise")[] = result.rows.map((row) => {
+    const events = row.perPerson.map((p) => p.guardrailAdjustment).filter((e): e is "cut" | "raise" | "none" => e !== undefined);
+    if (events.includes("cut")) return "cut";
+    if (events.includes("raise")) return "raise";
+    return "none";
+  });
 
-  return { netWorthByYear, hadShortfall, shortfallByYear, shortfallSeverity };
+  return { netWorthByYear, hadShortfall, shortfallByYear, shortfallSeverity, incomeByYear, guardrailEventByYear };
 }

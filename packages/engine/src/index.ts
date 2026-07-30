@@ -139,6 +139,9 @@ export {
   type HouseholdDrawdownStrategy,
 } from "./drawdown/solveHouseholdDrawdown.js";
 
+// Guyton-Klinger dynamic withdrawal guardrails (Confidence page, opt-in)
+export { applyGuytonKlinger, type DrawdownGuardrailPolicy, type GuardrailResult, type GuardrailState } from "./drawdown/guytonKlinger.js";
+
 // Simulation
 export { runProjection, totalTaxForYear } from "./simulation/runProjection.js";
 export type { DrawdownBucketDetail, PersonYearResult, ProjectionResult, YearLedgerRow } from "./simulation/runProjection.js";
