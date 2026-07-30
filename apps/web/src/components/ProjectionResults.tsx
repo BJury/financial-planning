@@ -1312,6 +1312,9 @@ export function ProjectionResults({
           <Button variant="default" size="xs" onClick={() => void navigate("/target-sensitivity")}>
             Target sensitivity
           </Button>
+          <Button variant="default" size="xs" onClick={() => void navigate("/confidence")}>
+            Confidence
+          </Button>
         </Group>
       </Group>
 

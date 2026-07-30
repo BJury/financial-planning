@@ -5,6 +5,7 @@ import { HashRouter, Route, Routes } from "react-router";
 import { loadSavedScenario, subscribeAutosave } from "./persistence/autosave.js";
 import { clearShareParam, decodeShareParam, readShareParam } from "./persistence/shareLink.js";
 import { Onboarding } from "./pages/Onboarding.js";
+import { StochasticProjection } from "./pages/StochasticProjection.js";
 import { StressTest } from "./pages/StressTest.js";
 import { TargetSensitivity } from "./pages/TargetSensitivity.js";
 import { TaxBreakdown } from "./pages/TaxBreakdown.js";
@@ -89,6 +90,7 @@ export function App() {
             <Route path="/tax-breakdown" element={<TaxBreakdown />} />
             <Route path="/stress-test" element={<StressTest />} />
             <Route path="/target-sensitivity" element={<TargetSensitivity />} />
+            <Route path="/confidence" element={<StochasticProjection />} />
           </Routes>
         </HashRouter>
       ) : (

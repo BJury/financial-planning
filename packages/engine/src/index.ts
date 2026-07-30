@@ -20,9 +20,17 @@ export {
 } from "./money/pence.js";
 
 // Schema (data model)
-export { DEFAULT_PROJECTION_YEARS, DEFAULT_SELECTED_CHART_LINES, DEFAULT_STATE_PENSION_AGE, personId } from "./schema/types.js";
+export {
+  DEFAULT_ASSET_ALLOCATION,
+  DEFAULT_PROJECTION_YEARS,
+  DEFAULT_SELECTED_CHART_LINES,
+  DEFAULT_STATE_PENSION_AGE,
+  personId,
+  RISK_PROFILE_PRESETS,
+} from "./schema/types.js";
 export type {
   Account,
+  AssetAllocation,
   CashAccount,
   GiaAccount,
   Household,
@@ -134,3 +142,29 @@ export {
 // Simulation
 export { runProjection, totalTaxForYear } from "./simulation/runProjection.js";
 export type { DrawdownBucketDetail, PersonYearResult, ProjectionResult, YearLedgerRow } from "./simulation/runProjection.js";
+
+// Stochastic projections (historical bootstrap / Monte Carlo confidence bands)
+export {
+  MONTE_CARLO_DEFAULT_PRESETS,
+  monteCarloPresetsWithMean,
+  type AssetClass,
+  type AssetClassPreset,
+} from "./stochastic/assetClasses.js";
+export {
+  listHistoricalReturns,
+  listHistoricalReturnsSources,
+  listUsEquityReturns,
+  listUsEquityReturnsSources,
+} from "./stochastic/historicalReturns/registry.js";
+export type { HistoricalReturnMonth, UsEquityReturnMonth } from "./stochastic/historicalReturns/types.js";
+export { createPrng, sampleHistoricalTrajectory, sampleMonteCarloTrajectory, type Prng } from "./stochastic/sampleReturns.js";
+export { isStochasticEligible, runStochasticTrajectory, type StochasticTrajectorySummary } from "./stochastic/runStochasticTrajectory.js";
+export {
+  runStochasticBatch,
+  SAMPLE_TRAJECTORY_COUNT,
+  type FinalOutcome,
+  type StochasticBatchOptions,
+  type StochasticBatchResult,
+  type StochasticMethod,
+  type YearPercentiles,
+} from "./stochastic/runStochasticBatch.js";

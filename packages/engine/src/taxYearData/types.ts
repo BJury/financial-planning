@@ -94,3 +94,8 @@ export interface TaxYearRuleSet {
   /** Source references for auditability (SPEC.md §6.2). */
   readonly sources: readonly { readonly description: string; readonly url: string }[];
 }
+
+/** The calendar year a tax year label like "2026-27" starts in — i.e. `2026`. Parsed from the label so every caller (the projection loop, the stochastic daily-rate conversion) derives it identically rather than re-parsing `taxYear` themselves. */
+export function startCalendarYearOf(ruleSet: TaxYearRuleSet): number {
+  return Number.parseInt(ruleSet.taxYear.split("-")[0] ?? "0", 10);
+}

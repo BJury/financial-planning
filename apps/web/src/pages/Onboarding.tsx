@@ -1,6 +1,7 @@
 import {
   convertNominalToReal,
   convertRealToNominal,
+  DEFAULT_ASSET_ALLOCATION,
   DEFAULT_PROJECTION_YEARS,
   DEFAULT_SELECTED_CHART_LINES,
   DEFAULT_STATE_PENSION_AGE,
@@ -11,6 +12,7 @@ import {
   personId,
   poundsToPence,
   registry,
+  type AssetAllocation,
   type CashAccount,
   type CatalogFieldSchema,
   type GiaAccount,
@@ -90,6 +92,8 @@ interface PensionAccountDraft {
   readonly employerAnnualContribution: number; // pounds
   /** ISO date — every pension created here is a SIPP (see buildScenario's comment), so this is always meaningful; "" when the owner's date of birth isn't known yet to default it from. */
   readonly accessDate: string;
+  /** Only read by the "Confidence" page's stochastic projections (SPEC.md's "Stochastic projections" section) — never by the deterministic projection above, which always uses `annualGrowthRate`. */
+  readonly assetAllocation: AssetAllocation;
 }
 
 interface IsaAccountDraft {
@@ -98,6 +102,7 @@ interface IsaAccountDraft {
   readonly owner: PersonId;
   readonly currentBalance: number;
   readonly annualGrowthRate: number; // real
+  readonly assetAllocation: AssetAllocation;
 }
 
 interface GiaAccountDraft {
@@ -107,6 +112,7 @@ interface GiaAccountDraft {
   readonly costBasis: number; // pounds — how much was originally paid in, for future CGT purposes
   readonly annualGrowthRate: number; // real, capital appreciation only
   readonly annualDividendYield: number; // plain %, not nominal/real — a yield on the current (already-real) balance
+  readonly assetAllocation: AssetAllocation;
 }
 
 interface CashAccountDraft {
@@ -328,10 +334,17 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
         annualChargeRate: a.annualChargeRate,
         employerAnnualContribution: penceToPounds(a.employerAnnualContribution),
         accessDate: a.accessDate ?? "",
+        assetAllocation: a.assetAllocation ?? DEFAULT_ASSET_ALLOCATION,
       })),
     isaAccounts: scenario.accounts
       .filter((a): a is IsaAccount => a.kind === "isa")
-      .map((a) => ({ id: a.id, owner: a.owner, currentBalance: penceToPounds(a.currentBalance), annualGrowthRate: a.annualGrowthRate })),
+      .map((a) => ({
+        id: a.id,
+        owner: a.owner,
+        currentBalance: penceToPounds(a.currentBalance),
+        annualGrowthRate: a.annualGrowthRate,
+        assetAllocation: a.assetAllocation ?? DEFAULT_ASSET_ALLOCATION,
+      })),
     giaAccounts: scenario.accounts
       .filter((a): a is GiaAccount => a.kind === "gia")
       .map((a) => ({
@@ -341,6 +354,7 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
         costBasis: penceToPounds(a.costBasis),
         annualGrowthRate: a.annualGrowthRate,
         annualDividendYield: a.annualDividendYield,
+        assetAllocation: a.assetAllocation ?? DEFAULT_ASSET_ALLOCATION,
       })),
     cashAccounts: scenario.accounts
       .filter((a): a is CashAccount => a.kind === "cash")
@@ -550,6 +564,7 @@ export function Onboarding() {
             annualChargeRate: 0.0005,
             employerAnnualContribution: 0,
             accessDate: answers.dateOfBirth ? isoDateFromAge(answers.dateOfBirth, 57) : "",
+            assetAllocation: DEFAULT_ASSET_ALLOCATION,
           },
         ]);
       }
@@ -565,7 +580,10 @@ export function Onboarding() {
       if (existingIsa) {
         setIsaAccounts((prev) => prev.map((a, i) => (i === 0 ? { ...a, currentBalance: answers.isa.balance } : a)));
       } else {
-        setIsaAccounts((prev) => [...prev, { id: isaAccountId, owner: PERSON_ID, currentBalance: answers.isa.balance, annualGrowthRate: 0 }]);
+        setIsaAccounts((prev) => [
+          ...prev,
+          { id: isaAccountId, owner: PERSON_ID, currentBalance: answers.isa.balance, annualGrowthRate: 0, assetAllocation: DEFAULT_ASSET_ALLOCATION },
+        ]);
       }
       if (answers.isa.annualContribution > 0) {
         applyQuickStartContribution(isaAccountId, poundsToPence(answers.isa.annualContribution), contributionEndDate);
@@ -588,6 +606,7 @@ export function Onboarding() {
             costBasis: answers.gia.balance,
             annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
             annualDividendYield: 0,
+            assetAllocation: DEFAULT_ASSET_ALLOCATION,
           },
         ]);
       }
@@ -660,6 +679,7 @@ export function Onboarding() {
       annualChargeRate: a.annualChargeRate,
       employerAnnualContribution: poundsToPence(a.employerAnnualContribution),
       ...(a.accessDate ? { accessDate: a.accessDate } : {}),
+      assetAllocation: a.assetAllocation,
     }));
 
     const isaAccountEntities: IsaAccount[] = isaAccounts.map((a) => ({
@@ -669,6 +689,7 @@ export function Onboarding() {
       isaType: "stocksAndShares",
       currentBalance: poundsToPence(a.currentBalance),
       annualGrowthRate: a.annualGrowthRate,
+      assetAllocation: a.assetAllocation,
     }));
 
     const giaAccountEntities: GiaAccount[] = giaAccounts.map((a) => ({
@@ -679,6 +700,7 @@ export function Onboarding() {
       costBasis: poundsToPence(a.costBasis),
       annualGrowthRate: a.annualGrowthRate,
       annualDividendYield: a.annualDividendYield,
+      assetAllocation: a.assetAllocation,
     }));
 
     const cashAccountEntities: CashAccount[] = cashAccounts.map((a) => ({
@@ -1096,6 +1118,7 @@ export function Onboarding() {
                     // new plan doesn't understate when access actually
                     // starts for most of this projection's own horizon.
                     accessDate: dateOfBirth ? isoDateFromAge(dateOfBirth, 57) : "",
+                    assetAllocation: DEFAULT_ASSET_ALLOCATION,
                   },
                 ])
               }
@@ -1109,7 +1132,10 @@ export function Onboarding() {
             </Menu.Item>
             <Menu.Item
               onClick={() =>
-                setIsaAccounts((prev) => [...prev, { id: generateId("isa"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0 }])
+                setIsaAccounts((prev) => [
+                  ...prev,
+                  { id: generateId("isa"), owner: PERSON_ID, currentBalance: 0, annualGrowthRate: 0, assetAllocation: DEFAULT_ASSET_ALLOCATION },
+                ])
               }
             >
               <Stack gap={0}>
@@ -1130,6 +1156,7 @@ export function Onboarding() {
                     costBasis: 0,
                     annualGrowthRate: convertNominalToReal(DEFAULT_EQUITY_NOMINAL_GROWTH_RATE, inflationRate),
                     annualDividendYield: 0,
+                    assetAllocation: DEFAULT_ASSET_ALLOCATION,
                   },
                 ])
               }

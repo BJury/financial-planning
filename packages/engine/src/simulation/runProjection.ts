@@ -69,7 +69,7 @@ import type { OneOffInflowConfig } from "../catalog/incomeSources/oneOffInflow.j
 import type { GeneralCashIncomeConfig } from "../catalog/incomeSources/generalCashIncome.js";
 import { DEFAULT_STATE_PENSION_AGE } from "../schema/types.js";
 import type { CashAccount, GiaAccount, IsaAccount, Owner, Person, PersonId, Property, Scenario } from "../schema/types.js";
-import type { TaxYearRuleSet } from "../taxYearData/types.js";
+import { startCalendarYearOf, type TaxYearRuleSet } from "../taxYearData/types.js";
 
 function isProperty(account: Scenario["accounts"][number]): account is Property {
   return account.kind === "property";
@@ -292,9 +292,23 @@ interface Pass1Result {
  * joint-account/joint-property income splitting (`splitByOwnership`,
  * applied inline wherever an `Owner` can be `"joint"`).
  */
-export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleSet, numberOfYears: number): ProjectionResult {
+/**
+ * `growthRateOverrides` (accountId -> one rate per `yearIndex`) lets a
+ * caller substitute a per-year sampled return for an account's own flat
+ * `annualGrowthRate` in step 7 below, without touching anything else in
+ * this function — the hook the stochastic-projection feature uses to run
+ * this same deterministic engine under randomized market returns
+ * (`stochastic/runStochasticTrajectory.ts`). Omitted (the normal case)
+ * reproduces today's fully deterministic behaviour exactly.
+ */
+export function runProjection(
+  scenario: Scenario,
+  confirmedRuleSet: TaxYearRuleSet,
+  numberOfYears: number,
+  growthRateOverrides?: ReadonlyMap<string, readonly number[]>,
+): ProjectionResult {
   const rows: YearLedgerRow[] = [];
-  const confirmedCalendarYear = Number.parseInt(confirmedRuleSet.taxYear.split("-")[0] ?? "0", 10);
+  const confirmedCalendarYear = startCalendarYearOf(confirmedRuleSet);
 
   let accountBalances = new Map<string, Pence>(scenario.accounts.map((account) => [account.id, account.currentBalance]));
   // Each person's rolling 3-year Annual Allowance carry-forward window
@@ -1631,7 +1645,8 @@ export function runProjection(scenario: Scenario, confirmedRuleSet: TaxYearRuleS
     //    so growing it (by whatever rate) is a no-op.
     for (const account of scenario.accounts) {
       const balance = nextAccountBalances.get(account.id) ?? zeroPence();
-      const netGrowthRate = account.kind === "pension" ? account.annualGrowthRate - account.annualChargeRate : account.annualGrowthRate;
+      const baseRate = growthRateOverrides?.get(account.id)?.[yearIndex] ?? account.annualGrowthRate;
+      const netGrowthRate = account.kind === "pension" ? baseRate - account.annualChargeRate : baseRate;
       nextAccountBalances.set(account.id, growPenceByRate(balance, netGrowthRate));
     }
 

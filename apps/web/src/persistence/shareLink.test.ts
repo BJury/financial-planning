@@ -1,5 +1,5 @@
 import type { Household, Person, Scenario } from "@fp/engine";
-import { personId, poundsToPence } from "@fp/engine";
+import { CURRENT_SCHEMA_VERSION, personId, poundsToPence } from "@fp/engine";
 import { describe, expect, it, vi } from "vitest";
 import { buildShareUrl, decodeShareParam, encodeScenarioForShareLink } from "./shareLink.js";
 
@@ -36,14 +36,17 @@ function base64UrlOf(text: string): string {
 }
 
 describe("shareLink round trip", () => {
-  it("decodes exactly what it encoded", async () => {
+  it("decodes exactly what it encoded, migrated up to the current schema version", async () => {
+    // decodeShareParam runs decoded data through migrateToLatest (same as every other load path —
+    // IndexedDB, file import) — a v1 scenario in comes out as the current version, not preserved
+    // as-is, so the round trip's schemaVersion legitimately differs from what was encoded.
     const scenario = makeScenario();
     const param = await encodeScenarioForShareLink(scenario);
 
     const result = await decodeShareParam(param);
     expect(result.kind).toBe("success");
     if (result.kind === "success") {
-      expect(result.scenario).toEqual(scenario);
+      expect(result.scenario).toEqual({ ...scenario, schemaVersion: CURRENT_SCHEMA_VERSION });
     }
   });
 

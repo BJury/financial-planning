@@ -72,8 +72,10 @@ pension tax relief, and the State Pension) correctly applied at each step.
   couple); modelling dependents/children as separate financial actors, or
   households of three or more adults, is out of scope for v1 (see
   Roadmap).
-- Not Monte Carlo / stochastic market modelling in v1 — deterministic growth
-  rate assumptions only (see Roadmap).
+- The main projection (§5.1–§5.8) is deterministic growth-rate assumptions
+  only — Monte Carlo / historical-bootstrap stochastic projections exist
+  as a **separate, opt-in tool** (§5.9), not a mode of the main projection
+  and never the default view.
 - Not a full self-assessment tax return calculator — self-employment
   income is out of scope for v1 (rental and investment income, unlike
   self-employment, *are* modelled, §3.6, §3.8).
@@ -995,6 +997,216 @@ Mechanically:
   introduce a small discrepancy for the first year or two of a plan
   (flagged as a known simplification, §11).
 
+### 5.9 Stochastic projections (historical bootstrap / Monte Carlo)
+
+**A deliberately separate, opt-in tool** ("Confidence" page, reached via a
+button on the main projection), not a mode of the main projection and
+never the default view (§1.2). The main projection stays the single
+deterministic line used to actually build and shape a plan; this feature
+re-runs that same engine hundreds-to-thousands of times under randomized
+investment returns, to show how much the plan's outcome depends on the
+*sequence* of returns actually received (sequence-of-returns risk), not
+just the single average growth rate the deterministic projection assumes.
+
+**Scope boundary.** Only the capital-growth component of Pension, ISA
+(stocks & shares), and GIA accounts is randomized. Explicitly excluded,
+staying on their own flat deterministic `annualGrowthRate` in every
+simulated run:
+- Cash accounts and cash ISAs — their `annualGrowthRate` also drives taxed
+  interest income elsewhere in the engine; randomizing it would make
+  taxable income swing with market noise, which isn't how deposit
+  interest behaves.
+- GIA dividend yield and Property (house-price growth and rental income
+  growth) — separate rate fields modelling different economic components;
+  deferred (see Roadmap).
+
+**Per-account input.** Each Pension/ISA/GIA account has an optional
+"Investment mix" — an equities/bonds/cash percentage split (entered via a
+named risk-profile preset — Cash, Cautious, Balanced, Adventurous, All
+equities — or a custom split) plus a separate "Equity type" choice of
+**US equities** or **UK equities**: a single either/or pick, not a blend,
+routing that account's whole equities percentage to one of the two
+underlying return series (see Historical bootstrap below) — matching how
+a real account is usually actually invested (e.g. "this SIPP tracks the
+S&P 500"). Model a genuine US/UK split within one pot by using two
+accounts instead. Unset defaults to Balanced/UK for stochastic purposes
+only; the deterministic projection never reads this field, only
+`annualGrowthRate`.
+
+**Method selector.** Currently hidden from the "Method" dropdown on the
+Confidence page (only "Historical bootstrap" is offered) — Monte Carlo's
+output wasn't judged helpful enough yet to surface to users, per a product
+decision. All of the engine code, tests, and UI plumbing below remain
+fully intact and working; re-enabling it is a one-line change
+(`apps/web/src/pages/StochasticProjection.tsx`'s Method `Select`).
+
+**Two return-generation methods**, sharing one batch-runner and result
+shape:
+- **Historical bootstrap** (primary/default): a moving-block bootstrap
+  over **two separate** bundled datasets of GBP, real, **monthly**
+  returns — deliberately not sharing one window, since US equities can be
+  sourced much further back than a genuine UK series can be built for,
+  and there's no reason to discard decades of real data just to keep
+  every class on the same calendar range:
+  - *US equities* (`historicalReturns/usEquityReturns.ts`): **Aug
+    1914-Sep 2023** (109 years). Robert Shiller's (Yale) monthly S&P 500
+    total-return series (nominal USD), converted to nominal GBP via the
+    $/£ exchange rate at each month's end (genuine monthly market data
+    from Dec 2003; Jan 1914-Nov 2003 linearly interpolates the Bank of
+    England's official *annual* $/£ series, since no free monthly series
+    reaches that far back), deflated using a genuine **monthly** UK price
+    index spliced from two Bank of England/ONS sources (Jul 1914-Mar
+    2017, then Apr 2017-present) — the one genuinely modelled, rather
+    than raw-market, segment in this table is the pre-2003 FX
+    interpolation.
+  - *UK equities, bonds, cash* (`historicalReturns/data.ts`): **Feb
+    1987-Sep 2023** (36.5 years) — the practical floor set by the UK RPI
+    series used to deflate all three to real terms. UK equities: FTSE 100
+    monthly price index (Yahoo Finance) plus FTSE 100's published average
+    annual dividend yield (2000-present; 1987-1999 holds the earliest
+    available figure constant, since no free yield history reaches
+    further back — likely understates 1987-1999 returns somewhat). Bonds:
+    UK gilts, derived from the Bank of England's official nominal spot
+    yield curve (10-year constant maturity, month-end) via the standard
+    duration-based total-return approximation for a rolling
+    constant-maturity zero-coupon bond (`monthlyReturn ≈ y/12 - D_mod *
+    Δy`, `D_mod = 10 / (1 + y)`) — not a genuine total-return index (none
+    could be found free with this much history), but built entirely from
+    the BoE's own official yield data via a standard, disclosed formula.
+    Cash: unchanged from this dataset's original methodology (US 3-month
+    T-Bill, GBP-converted, 1928-present), just decomposed into 12 equal
+    monthly compounding steps per year so it lines up with the other two
+    classes' monthly grain.
+
+  **UK equities, bonds, and cash** are drawn together via a random
+  moving-block bootstrap: repeatedly draws a random 10-year block of
+  consecutive *months* — not necessarily starting in January — from the
+  same randomly-picked historical month each (preserving real cross-asset
+  correlation among the three, e.g. 2022's simultaneous equity and bond
+  real-return loss during the UK gilt crisis — the single worst bond
+  month in that table), and compounds each run of 12 months into one
+  simulated year's return, concatenating blocks until the projection
+  horizon is filled. Monthly (rather than annual) source data means a
+  block's start can land on any month in the table rather than only a
+  calendar-year start — far more distinct historical sequences to
+  resample from, for the same 10-year persistence window.
+
+  **US equities** use a different method entirely: an **exhaustive
+  historical backtest**, not a random sample. Every distinct real window
+  of exactly the plan's own length (e.g. all 30-year windows) is walked
+  from the earliest possible starting month to the latest, one month at a
+  time — genuinely unbroken historical sequences, never spliced from two
+  different periods (`sampleReturns.ts`'s `walkUsEquityWindows`). This is
+  a census of every historical outcome that horizon could actually have
+  produced, not a sample of some of them, so it isn't compatible with a
+  user-chosen run count: whenever any account's `equityMarket` is `"us"`
+  (SPEC.md's per-account "Equity type" input, above), the batch runs
+  exactly once per real window — e.g. ~951 runs for a 30-year plan on the
+  109-year US dataset — **overriding the "Number of runs" control**,
+  whose value is ignored for that batch. The actual count used is
+  reported back as the result's own `runCount`, which the UI reads rather
+  than assuming it echoes the requested one. (An implausibly long horizon
+  — longer than the whole 109-year dataset — falls back to a single
+  circular window rather than refusing to run; not the normal path.) The
+  accepted consequence: an account whose `equityMarket` is `"us"` has its
+  equities return uncorrelated with that same simulated year's bonds/cash
+  return (drawn from a different table by a different method entirely) —
+  a `"uk"` account keeps full correlation, drawn together as above.
+- **Monte Carlo**: independent per-asset-class, **per-year** lognormal
+  draws from a (mean, volatility) pair per asset class — a pure random
+  walk for the whole horizon, deliberately with **no block structure**,
+  unlike Historical bootstrap. An interim version drew one shock per
+  10-year block instead (matching Historical bootstrap's own cadence) to
+  bring its tail in line with Historical bootstrap's; reverted per product
+  decision — Monte Carlo mode is meant to be a pure statistical random
+  walk, not to borrow persistence structure from real history (that's
+  what Historical bootstrap mode is for). The consequence, knowingly
+  accepted: compounding independent year-by-year shocks over a 40+-year
+  retirement horizon produces a tail far fatter than Historical
+  bootstrap's own resampling of the identical underlying data, because
+  real multi-year market periods have their own persistent character (a
+  "lost decade", a boom) that 45 independent annual coin-flips cannot
+  reproduce. The default volatility per class is the standard deviation of
+  the bundled dataset's own **annual** returns — the monthly data
+  compounded into complete calendar years first (1988-2022; the dataset's
+  partial first and last years are excluded), since Monte Carlo's presets
+  describe a single year's return distribution, not a monthly one — not an
+  independently hand-picked number. The default **mean** is fixed at each
+  stochastic-eligible **account's own `annualGrowthRate`**, applied
+  uniformly across all four asset classes for that account
+  (`monteCarloPresetsWithMean`, called per account in
+  `runStochasticBatch.ts`) — the same base rate the deterministic
+  projection uses for that account (before the pension-charge deduction,
+  which both paths apply identically in `runProjection.ts` step 7), so the
+  deterministic line and Monte Carlo's median start from the same
+  assumption per account, rather than one scenario-wide figure unrelated
+  to what the user actually set. Earlier versions pinned this to a fixed
+  0%, then to the scenario's own `inflationRate` uniformly across every
+  account; both reverted per product decision. Because Monte Carlo's mean
+  is now account-specific, each stochastic-eligible account draws its
+  *own* independent trajectory (unlike Historical bootstrap, which draws
+  one shared trajectory per run and hands it to every account) — the
+  tradeoff being that two accounts no longer necessarily "feel" the same
+  simulated market year, in exchange for each one's own assumption being
+  honoured. Both mean and volatility remain illustrative starting points,
+  not a precise forecast.
+
+  **Fat tails.** Bonds and cash draw their shock from a Student's t
+  distribution (`assetClasses.ts`'s `impliedDegreesOfFreedom`,
+  `sampleReturns.ts`'s `sampleStandardizedT`) instead of a plain Gaussian —
+  their real annual returns in the bundled dataset show genuine positive
+  excess kurtosis (more frequent large moves than a bell curve predicts).
+  The degrees of freedom are derived from each class's own measured
+  kurtosis (`excessKurtosis = 6 / (nu - 4)`), floored at 5 for numerical
+  safety. **Both equities classes deliberately keep a plain Gaussian
+  shock**: their measured kurtosis on this dataset is *negative*
+  (thinner-tailed than a bell curve) — a Student's t cannot represent a
+  kurtosis below a Gaussian's at all, and in any case a few-decade
+  sample's kurtosis estimate is itself noisy, so a small positive reading
+  wouldn't be good evidence of real fat tails either. Fat tails are
+  applied only where the data actually supports them, not uniformly by
+  assumption.
+
+**Daily rate.** Each account-year's blended return is routed through an
+explicit daily rate before being applied — converted to the rate that
+compounds to it over the actual number of days in that specific UK tax
+year (365, or 366 when the tax year's February falls in a leap year), then
+compounded back up (`stochastic/dailyRate.ts`). This reproduces the
+original annual figure exactly (that's what "annualised" means: the daily
+rate is *defined* as whatever compounds to the annual one), so it doesn't
+change simulated outcomes on its own — a deliberate, explicit choice over
+the alternative of prorating cash flows against their actual in-tax-year
+date, which the engine doesn't track (SPEC.md's contribution/withdrawal
+model resolves everything once per tax year throughout, not just here).
+
+**Output.** Each of the (typically hundreds to thousands of) simulated
+trajectories is reduced to a net-worth-per-year array and a boolean
+"hit a shortfall" flag (reusing the engine's existing drawdown/
+living-expenses shortfall detection — no new tracking needed). The batch
+is aggregated into per-year net worth percentile bands (10th/25th/50th/
+75th/90th) shown as a shaded-band chart alongside the deterministic
+projection's own line, plus a headline "funded without a shortfall in X%
+of simulated market histories" success rate (with the failure share
+called out directly) and a plain-language sentence translating the
+final-year percentiles into "half of all simulated histories ended
+between £A and £B" terms. A histogram of end-of-plan net worth (bucketed
+linearly up to the 90th percentile, split by whether that run ever hit a
+shortfall) shows the full shape of the outcome distribution rather than
+just five cut points — bucketing the *full* min-max range doesn't work
+because a 100%-equities, multi-decade run occasionally lands far above
+the rest, which would otherwise collapse every other bucket into one
+indistinguishable spike; the top 10% is instead pooled into one visually
+separate bucket, itself capped for display at the 99th percentile (not
+the batch's literal maximum, which is a statistically unstable number
+that simply grows with "Number of runs") with the true rarest outcome
+noted only as a footnote.
+
+**Performance.** A single deterministic run is ~3ms (§9.7); a batch of
+hundreds-to-thousands of runs would visibly block the UI thread if run on
+the main thread the way the Stress Test/Target Sensitivity grids are
+(§9.7) — this feature instead runs the batch in a Web Worker, reporting
+progress so the page can show a progress bar rather than freezing.
+
 ---
 
 ## 6. Tax Rules Data Model
@@ -1870,8 +2082,11 @@ mechanics come online, rather than being written once at the end.
   actually claiming Child Benefit) as part of a household plan.
 - Student loan repayment deductions (Plan 1/2/4/5, Postgraduate Loan) as
   an additional payroll deduction alongside Income Tax and NI (§5.3).
-- Monte Carlo / stochastic return modelling for a probabilistic ("X%
-  chance of running out of money") view alongside the deterministic one.
+- ~~Monte Carlo / stochastic return modelling for a probabilistic ("X%
+  chance of running out of money") view alongside the deterministic
+  one.~~ Implemented — see §5.9. Deferred beyond this: UK-specific
+  historical index data (currently a US proxy series), and stochastic
+  variation of GIA dividend yield / property values.
 - Self-employment income and Class 2/4 NI.
 - Furnished holiday lets, HMO properties, Stamp Duty Land Tax on a
   modelled future purchase, and limited-company property ownership.

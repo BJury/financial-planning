@@ -86,10 +86,40 @@ export interface Household {
 
 // --- Accounts -----------------------------------------------------------
 
+/**
+ * How an account's balance is invested, for stochastic projections
+ * (`stochastic/runStochasticTrajectory.ts`). Only meaningful for
+ * Pension/ISA/GIA accounts; ignored for Cash accounts, cash ISAs, and
+ * Property (SPEC.md — see "Stochastic projections" section for the scope
+ * boundary). `equities` and `bonds` and `cash` sum to 1.
+ *
+ * `equityMarket` picks which of the two equity return series
+ * (`stochastic/assetClasses.ts`'s `AssetClass` has both `usEquities` and
+ * `ukEquities`) the `equities` fraction draws from — a single either/or
+ * choice per account, not a blend, matching how a real account is usually
+ * actually invested (e.g. "this SIPP tracks the S&P 500"). Use two
+ * separate accounts if you want to model a genuine US/UK equity split
+ * within one pot.
+ */
+export interface AssetAllocation {
+  readonly equities: number;
+  readonly equityMarket: "us" | "uk";
+  readonly bonds: number;
+  readonly cash: number;
+}
+
 interface AccountBase {
   readonly id: string;
   /** Already a *real* rate, same convention as SalaryConfig.annualGrowthRate (SPEC.md §3.10, §5.8). */
   readonly annualGrowthRate: number;
+  /**
+   * Optional, like `Person.statePensionAge` above, so every existing
+   * `Account` value keeps typechecking without modification. Absent means
+   * "use `DEFAULT_ASSET_ALLOCATION`" wherever this is read for stochastic
+   * purposes — the deterministic projection never reads this field at
+   * all, only `annualGrowthRate`.
+   */
+  readonly assetAllocation?: AssetAllocation;
 }
 
 export interface PensionAccount extends AccountBase {
@@ -349,3 +379,21 @@ export const DEFAULT_PROJECTION_YEARS = 30;
 
 /** The UI's default chart-line selection, and its own fallback wherever `Scenario.selectedChartLines` is absent. */
 export const DEFAULT_SELECTED_CHART_LINES: readonly string[] = ["netWorth", "netIncome"];
+
+/**
+ * Named risk-profile presets offered in the UI as a simpler alternative
+ * to entering raw percentages — illustrative starting points, not a
+ * claim of precision, editable per-account via a "Custom" option. Each
+ * preset defaults `equityMarket` to `"uk"` (this is a UK retirement
+ * planner); switch it per account on the "Custom" option.
+ */
+export const RISK_PROFILE_PRESETS = {
+  cash: { equities: 0, equityMarket: "uk", bonds: 0, cash: 1 },
+  cautious: { equities: 0.2, equityMarket: "uk", bonds: 0.5, cash: 0.3 },
+  balanced: { equities: 0.5, equityMarket: "uk", bonds: 0.3, cash: 0.2 },
+  adventurous: { equities: 0.85, equityMarket: "uk", bonds: 0.1, cash: 0.05 },
+  allEquities: { equities: 1, equityMarket: "uk", bonds: 0, cash: 0 },
+} as const satisfies Record<string, AssetAllocation>;
+
+/** The engine's own fallback wherever a stochastic-eligible `Account.assetAllocation` is absent. */
+export const DEFAULT_ASSET_ALLOCATION: AssetAllocation = RISK_PROFILE_PRESETS.balanced;
