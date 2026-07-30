@@ -986,7 +986,7 @@ export function StochasticProjection() {
                 <BarChart data={percentileHistogramData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-                  <YAxis domain={[0, 100]} tickFormatter={(v: number) => `${v}%`} width={50} />
+                  <YAxis domain={[0, 100]} ticks={[0, 20, 40, 60, 80, 100]} tickFormatter={(v: number) => `${Math.round(v)}%`} width={50} />
                   <Tooltip content={PercentileHistogramTooltip} />
                   <Legend />
                   <Bar
