@@ -14,6 +14,8 @@ export interface ScenarioRow {
   readonly schemaVersion: number;
   readonly data: unknown;
   readonly updatedAt: string;
+  /** Tab display order — Dexie's own row order follows the `id` primary key (effectively random for UUIDs), not the order tabs were arranged in, so this is stored explicitly rather than inferred. */
+  readonly order: number;
 }
 
 class AppDatabase extends Dexie {

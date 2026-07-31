@@ -1,7 +1,6 @@
 import type { Scenario } from "@fp/engine";
 import { Button, TextInput } from "@mantine/core";
 import { useState } from "react";
-import { exportScenarioToFile } from "../persistence/fileExportImport.js";
 import { buildShareUrl } from "../persistence/shareLink.js";
 import { InfoTip } from "./InfoTip.js";
 
@@ -11,20 +10,23 @@ import { InfoTip } from "./InfoTip.js";
  * filesystems rather than just the ones any one OS happens to reject, so
  * the same export behaves the same way regardless of where it's later
  * opened. Falls back to the previous fixed filename when unset or when
- * sanitising leaves nothing usable.
+ * sanitising leaves nothing usable. Also used by `Onboarding.tsx`'s "Save
+ * to file" button, which lives alongside the other plan/tab-management
+ * actions rather than here — see this file's own doc comment below.
  */
-function filenameForScenario(name: string | undefined): string {
+export function filenameForScenario(name: string | undefined): string {
   const sanitised = (name ?? "").replace(/[/\\:*?"<>|]/g, " ").replace(/\s+/g, " ").trim();
   return sanitised ? `${sanitised}.json` : "retirement-plan.json";
 }
 
 /**
- * "Save to file" / "Share link" (SPEC.md §9.2) — both only meaningful
- * once there's an actual plan to save or share, so this renders inside
- * `ProjectionResults`'s own header, alongside its other projection-scoped
- * actions (Export report, Tax breakdown, ...), rather than the
- * always-visible main header — see `OpenFromFileButton.tsx` for the
- * counterpart that stays visible even with no plan yet.
+ * "Share link" (SPEC.md §9.2) — only meaningful once there's an actual
+ * plan to share, so this renders inside `ProjectionResults`'s own header,
+ * alongside its other projection-scoped actions (Export report, Tax
+ * breakdown, ...). "Save to file" and "Open from file" moved to
+ * `Onboarding.tsx`'s plan/tab-management button row instead, since (unlike
+ * sharing) they're a symmetric pair that both move the scenario to/from
+ * your own filesystem, not to another person.
  */
 export function PlanShareControls({ scenario }: { readonly scenario: Scenario }) {
   // "copied" is a transient self-resetting label, not persisted state —
@@ -50,9 +52,6 @@ export function PlanShareControls({ scenario }: { readonly scenario: Scenario })
 
   return (
     <>
-      <Button variant="default" size="xs" onClick={() => exportScenarioToFile(scenario, filenameForScenario(scenario.name))}>
-        Save to file
-      </Button>
       <Button variant="default" size="xs" onClick={() => void handleShare()}>
         {shareState === "copied" ? "Copied!" : "Share link"}
       </Button>

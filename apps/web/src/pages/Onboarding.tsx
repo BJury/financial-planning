@@ -28,7 +28,7 @@ import {
   type Scenario,
   type TargetDrawdownIncomeConfig,
 } from "@fp/engine";
-import { ActionIcon, AppShell, Burger, Button, Card, Group, Menu, Modal, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
+import { ActionIcon, AppShell, Burger, Button, Card, Group, Menu, NumberInput, ScrollArea, Select, Stack, Switch, Text, TextInput, Title } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { useEffect, useMemo, useState } from "react";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
@@ -38,10 +38,12 @@ import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { InfoTip } from "../components/InfoTip.js";
 import { OpenFromFileButton } from "../components/OpenFromFileButton.js";
+import { filenameForScenario } from "../components/PlanShareControls.js";
+import { PlanTabs } from "../components/PlanTabs.js";
 import { ProjectionResults } from "../components/ProjectionResults.js";
 import { QuickStartWizard, type QuickStartAnswers } from "../components/QuickStartWizard.js";
 import { formatNumber } from "../format.js";
-import { clearSavedScenario } from "../persistence/autosave.js";
+import { exportScenarioToFile } from "../persistence/fileExportImport.js";
 import { useScenarioStore } from "../state/store.js";
 
 const PERSON_ID = personId("me");
@@ -405,9 +407,8 @@ function draftsFromScenario(scenario: Scenario | null): OnboardingDrafts {
 export function Onboarding() {
   const setScenario = useScenarioStore((s) => s.setScenario);
   const existingScenario = useScenarioStore((s) => s.scenario);
-  const resetScenario = useScenarioStore((s) => s.resetScenario);
+  const clonePlan = useScenarioStore((s) => s.clonePlan);
   const [navOpened, { toggle: toggleNav }] = useDisclosure();
-  const [newPlanConfirmOpened, { open: openNewPlanConfirm, close: closeNewPlanConfirm }] = useDisclosure(false);
 
   // Computed once, from whatever was in the store at mount time — by the
   // time this page can be reached, App's initial hydration (§9.2) has
@@ -442,19 +443,6 @@ export function Onboarding() {
   // stays instantly responsive, only the expensive projection recompute lags.
   const [selectedChartLines, setSelectedChartLines] = useState<string[]>([...initial.selectedChartLines]);
   const [quickStartOpened, setQuickStartOpened] = useState(false);
-
-  // "New" (SPEC.md §9.2's escape hatch for "I want to start over") clears
-  // both halves of persistence: the in-memory store (`resetScenario`,
-  // which also forces `Onboarding` to remount via `loadGeneration` and
-  // re-derive its own blank defaults) and the autosaved IndexedDB row
-  // (`clearSavedScenario`) — resetting only the former would leave the
-  // old plan sitting there ready to silently reappear on the next
-  // refresh.
-  const handleConfirmNewPlan = () => {
-    void clearSavedScenario();
-    resetScenario();
-    closeNewPlanConfirm();
-  };
 
   const addIncomeSource = (type: string) => {
     const definition = registry.getIncomeSource(type);
@@ -849,50 +837,59 @@ export function Onboarding() {
   return (
     <>
     <AppShell
-      header={{ height: 56 }}
+      header={{ height: 96 }}
       navbar={{ width: 460, breakpoint: "sm", collapsed: { mobile: !navOpened } }}
       padding="md"
     >
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group gap="sm">
-            <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
-            <Title order={3}>Can I Stop</Title>
-            {/* A real (optional) `Scenario.name`, editable right where the old static "Your plan" label used to sit — saved/autosaved like every other field, and used to suggest a filename on export. */}
-            <TextInput
-              aria-label="Plan name"
-              placeholder="Name your plan"
-              value={planName}
-              onChange={(e) => setPlanName(e.currentTarget.value)}
-              size="xs"
-              w={180}
-              visibleFrom="xs"
-            />
+        <Stack gap={0} h="100%">
+          <Group h={56} px="md" justify="space-between" wrap="nowrap">
+            <Group gap="sm">
+              <Burger opened={navOpened} onClick={toggleNav} hiddenFrom="sm" size="sm" />
+              <Title order={3}>Can I Stop</Title>
+            </Group>
+            {/* Hidden below "sm" (the same breakpoint the Navbar itself collapses at) — with the burger, title, and tabs already competing for space on a narrow header, these wrapped onto their own row(s) and, since AppShell.Header has a fixed height, overflowed straight over the page content below it. Moved into the mobile nav drawer instead (below), where there's always room. */}
+            <Group gap="xs" visibleFrom="sm">
+              <AboutDialog />
+              <ColorSchemeToggle />
+            </Group>
           </Group>
-          {/* Hidden below "sm" (the same breakpoint the Navbar itself collapses at) — with the burger, title, and plan name already competing for space on a narrow header, these four wrapped onto their own row(s) and, since AppShell.Header has a fixed height, overflowed straight over the page content below it. Moved into the mobile nav drawer instead (below), where there's always room. */}
-          <Group gap="xs" visibleFrom="sm">
-            <OpenFromFileButton />
-            <AboutDialog />
-            <ColorSchemeToggle />
+          {/* The plan-name input used to live in the row above — it's now the tab label itself
+              (click the active tab to rename it), so this row is always shown, even with one tab. */}
+          <Group px="md" wrap="nowrap" style={{ overflowX: "auto" }}>
+            <PlanTabs activePlanName={planName} onActivePlanNameChange={setPlanName} />
           </Group>
-        </Group>
+        </Stack>
       </AppShell.Header>
 
       <AppShell.Navbar p="md">
         <ScrollArea offsetScrollbars="y">
           <Stack gap="xl" pb="xl">
             <Group gap="xs" hiddenFrom="sm">
-              <OpenFromFileButton />
               <AboutDialog />
               <ColorSchemeToggle />
             </Group>
-            <Group gap="xs" grow>
-              <Button variant="light" onClick={() => setQuickStartOpened(true)}>
+            {/* Plan/tab management, grouped together: Quick start and Clone act on the currently open
+                tab, Save/Open move a scenario to and from your own filesystem — a symmetric pair, not
+                grouped with "Share link" (sends a live link to someone else) or "Export report"
+                (exports computed projection results, not the scenario's inputs). */}
+            <Group gap={4} grow wrap="nowrap">
+              <Button variant="light" size="xs" px={6} onClick={() => setQuickStartOpened(true)}>
                 Quick start
               </Button>
-              <Button variant="light" color="red" onClick={openNewPlanConfirm}>
-                New
+              <Button variant="light" size="xs" px={6} onClick={() => clonePlan()}>
+                Clone
               </Button>
+              <Button
+                variant="light"
+                size="xs"
+                px={6}
+                disabled={!liveScenario}
+                onClick={() => liveScenario && exportScenarioToFile(liveScenario, filenameForScenario(liveScenario.name))}
+              >
+                Save to file
+              </Button>
+              <OpenFromFileButton variant="light" size="xs" px={6} />
             </Group>
             <Stack gap="sm">
               <Title order={4}>About you</Title>
@@ -1324,22 +1321,6 @@ export function Onboarding() {
     {quickStartOpened && (
       <QuickStartWizard existingAnswers={quickStartDefaults} onClose={() => setQuickStartOpened(false)} onComplete={applyQuickStart} />
     )}
-    <Modal opened={newPlanConfirmOpened} onClose={closeNewPlanConfirm} title="Start a new plan?" centered>
-      <Stack gap="md">
-        <Text size="sm">
-          This clears everything — accounts, income, outgoings, assumptions — and can&rsquo;t be undone. If you want
-          to keep what you have, use &ldquo;Save to file&rdquo; first.
-        </Text>
-        <Group justify="flex-end">
-          <Button variant="subtle" onClick={closeNewPlanConfirm}>
-            Cancel
-          </Button>
-          <Button color="red" onClick={handleConfirmNewPlan}>
-            Start new plan
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
     </>
   );
 }
