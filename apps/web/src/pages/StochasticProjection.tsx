@@ -40,7 +40,7 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 import {
   Area,
@@ -645,12 +645,119 @@ export function StochasticProjection() {
   // Belt-and-braces cleanup if the user navigates away mid-run.
   useEffect(() => () => workerRef.current?.terminate(), []);
 
+  const confirmedRuleSet = getLatestConfirmedRuleSet();
+  const startCalendarYear = new Date(confirmedRuleSet.effectiveFrom).getUTCFullYear();
+
+  // Same scenario, same deterministic engine (`computeProjection`) the main
+  // projection page itself uses — plotted alongside the percentile bands
+  // so the gap between "one smooth assumed rate" and "a real spread of
+  // simulated market histories" is visible on this page directly, rather
+  // than requiring a manual comparison against the other page's numbers.
+  // Memoized: `computeProjection` is a full deterministic engine run, not
+  // worth repeating on every unrelated re-render (an axis toggle, a
+  // guardrail parameter tweak, a bucket click) while a result is shown —
+  // these hooks all sit above the `!scenario` guard below since React
+  // requires hooks to run unconditionally on every render.
+  const deterministicNetWorthByYear = useMemo(
+    () => (scenario && result ? computeProjection(scenario).rows.map((row) => penceToPounds(computeNetWorth(row))) : []),
+    [scenario, result],
+  );
+
+  const sampleTrajectories = result?.sampleTrajectories ?? [];
+
+  // O(sample trajectories × years) — up to ~950 trajectories under the exhaustive US-equities
+  // backtest (`runStochasticBatch.ts`), not just the usual 100 — the most expensive of these builders.
+  const chartData = useMemo(() => {
+    if (!scenario) return [];
+    return (result?.netWorthPercentilesByYear ?? []).map((p, i) => {
+      const p10 = penceToPounds(p.p10);
+      const p15 = penceToPounds(p.p15);
+      const p25 = penceToPounds(p.p25);
+      const p50 = penceToPounds(p.p50);
+      const p75 = penceToPounds(p.p75);
+      const p85 = penceToPounds(p.p85);
+      const p90 = penceToPounds(p.p90);
+      const samplePathValues = Object.fromEntries(
+        sampleTrajectories.map((trajectory, runIndex) => [`run${runIndex}`, penceToPounds(trajectory[i] ?? zeroPence())]),
+      );
+      return {
+        year: xAxisLabelForIndex(i, axisMode, scenario.household.people, startCalendarYear),
+        deterministic: deterministicNetWorthByYear[i] ?? 0,
+        p10,
+        p15,
+        p25,
+        p50,
+        p75,
+        p85,
+        p90,
+        outerBand: p90 - p10,
+        innerBand: p75 - p25,
+        ...samplePathValues,
+      };
+    });
+  }, [scenario, result, sampleTrajectories, deterministicNetWorthByYear, axisMode, startCalendarYear]);
+
+  const finalYear = chartData.at(-1);
+
+  // The deterministic projection's own drawdown income, per year — guardrails never touch the
+  // deterministic engine (they're a Confidence-page-only, stochastic-only mechanic), so this is
+  // exactly the flat/phased target income the plan is built around, useful as a "what the old fixed
+  // plan would have drawn" reference specifically when guardrails are actually diverging from it.
+  // Only computed under Guyton-Klinger mode — under Fixed, the median line already *is* this figure
+  // (bar shortfall-driven variance), so a second overlapping line would add nothing.
+  const deterministicIncomeByYear = useMemo(() => {
+    if (!scenario || !result || withdrawalStrategy !== "guytonKlinger") return [];
+    return computeProjection(scenario).rows.map((row) =>
+      row.perPerson.reduce((sum, p) => {
+        const received = sumPence([p.grossIncome, p.rentalProfitIncome, p.statePensionIncome, p.drawdownNetAchieved, p.taxFreeIncome, p.mortgageInterestCredit, p.propertySaleNetProceeds]);
+        const deducted = sumPence([p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax, p.otherExpenses]);
+        return sum + penceToPounds(subtractPence(received, deducted));
+      }, 0),
+    );
+  }, [scenario, result, withdrawalStrategy]);
+
+  // Total net income each year, by percentile — every income source (earned, rental, State
+  // Pension, drawdown, tax-free, mortgage interest credit, property sale proceeds) less tax and
+  // expenses, same as ProjectionResults.tsx's own "Net income" metric — always populated (real
+  // figures, not a placeholder) regardless of withdrawal strategy, so the chart shows genuine data
+  // under a flat target too (e.g. any variability caused by shortfalls), not just under guardrails.
+  const incomeChartData = useMemo(() => {
+    if (!scenario) return [];
+    return (result?.incomeByYearPercentiles ?? []).map((p, i) => ({
+      year: xAxisLabelForIndex(i, axisMode, scenario.household.people, startCalendarYear),
+      p10: penceToPounds(p.p10),
+      p15: penceToPounds(p.p15),
+      p25: penceToPounds(p.p25),
+      p50: penceToPounds(p.p50),
+      p75: penceToPounds(p.p75),
+      p85: penceToPounds(p.p85),
+      p90: penceToPounds(p.p90),
+      outerBand: penceToPounds(p.p90) - penceToPounds(p.p10),
+      innerBand: penceToPounds(p.p75) - penceToPounds(p.p25),
+      deterministic: deterministicIncomeByYear[i] ?? 0,
+    }));
+  }, [scenario, result, axisMode, startCalendarYear, deterministicIncomeByYear]);
+
+  const histogramData = useMemo(() => (result ? buildHistogram(result.finalOutcomes, result.runCount) : []), [result]);
+  const percentileHistogramData = useMemo(() => (result ? buildPercentileHistogram(result.finalOutcomes) : []), [result]);
+
+  // Only `sampleTrajectories.length` runs, spread evenly across the outcome distribution (not just
+  // "the first N simulated" — see StochasticBatchResult.sampledRunIndices's doc comment), have a
+  // full year-by-year trajectory to plot at all. A clicked bucket's matches are its own `runIndices`
+  // (indices into `finalOutcomes`) mapped to their *position* within the sampled subset, via this
+  // reverse lookup — `finalOutcomes` index and sample position are no longer the same number now
+  // that the sample isn't just a contiguous prefix. Filtering by index (not by re-checking each
+  // run's value against rangeLow/rangeHigh) matters when many runs are tied at the same value — e.g.
+  // a big cluster ending at exactly £0 can span several adjacent buckets' ranges, and a value check
+  // alone would double-count those runs into every bucket whose range happens to include that value.
+  const sampledPositionByRunIndex = useMemo(
+    () => new Map((result?.sampledRunIndices ?? []).map((runIndex, position) => [runIndex, position])),
+    [result],
+  );
+
   if (!scenario) {
     return <Navigate to="/" replace />;
   }
-
-  const confirmedRuleSet = getLatestConfirmedRuleSet();
-  const startCalendarYear = new Date(confirmedRuleSet.effectiveFrom).getUTCFullYear();
 
   const historicalReturns = listHistoricalReturns();
   const historicalSources = listHistoricalReturnsSources();
@@ -720,92 +827,6 @@ export function StochasticProjection() {
     worker.postMessage(request);
   };
 
-  // Same scenario, same deterministic engine (`computeProjection`) the main
-  // projection page itself uses — plotted alongside the percentile bands
-  // so the gap between "one smooth assumed rate" and "a real spread of
-  // simulated market histories" is visible on this page directly, rather
-  // than requiring a manual comparison against the other page's numbers.
-  const deterministicNetWorthByYear = result ? computeProjection(scenario).rows.map((row) => penceToPounds(computeNetWorth(row))) : [];
-
-  const sampleTrajectories = result?.sampleTrajectories ?? [];
-  const chartData = (result?.netWorthPercentilesByYear ?? []).map((p, i) => {
-    const p10 = penceToPounds(p.p10);
-    const p15 = penceToPounds(p.p15);
-    const p25 = penceToPounds(p.p25);
-    const p50 = penceToPounds(p.p50);
-    const p75 = penceToPounds(p.p75);
-    const p85 = penceToPounds(p.p85);
-    const p90 = penceToPounds(p.p90);
-    const samplePathValues = Object.fromEntries(
-      sampleTrajectories.map((trajectory, runIndex) => [`run${runIndex}`, penceToPounds(trajectory[i] ?? zeroPence())]),
-    );
-    return {
-      year: xAxisLabelForIndex(i, axisMode, scenario.household.people, startCalendarYear),
-      deterministic: deterministicNetWorthByYear[i] ?? 0,
-      p10,
-      p15,
-      p25,
-      p50,
-      p75,
-      p85,
-      p90,
-      outerBand: p90 - p10,
-      innerBand: p75 - p25,
-      ...samplePathValues,
-    };
-  });
-
-  const finalYear = chartData.at(-1);
-
-  // The deterministic projection's own drawdown income, per year — guardrails never touch the
-  // deterministic engine (they're a Confidence-page-only, stochastic-only mechanic), so this is
-  // exactly the flat/phased target income the plan is built around, useful as a "what the old fixed
-  // plan would have drawn" reference specifically when guardrails are actually diverging from it.
-  // Only computed under Guyton-Klinger mode — under Fixed, the median line already *is* this figure
-  // (bar shortfall-driven variance), so a second overlapping line would add nothing.
-  const deterministicIncomeByYear =
-    result && withdrawalStrategy === "guytonKlinger"
-      ? computeProjection(scenario).rows.map((row) =>
-          row.perPerson.reduce((sum, p) => {
-            const received = sumPence([p.grossIncome, p.rentalProfitIncome, p.statePensionIncome, p.drawdownNetAchieved, p.taxFreeIncome, p.mortgageInterestCredit, p.propertySaleNetProceeds]);
-            const deducted = sumPence([p.incomeTax, p.nationalInsurance, p.annualAllowanceCharge, p.savingsTax, p.dividendTax, p.otherExpenses]);
-            return sum + penceToPounds(subtractPence(received, deducted));
-          }, 0),
-        )
-      : [];
-
-  // Total net income each year, by percentile — every income source (earned, rental, State
-  // Pension, drawdown, tax-free, mortgage interest credit, property sale proceeds) less tax and
-  // expenses, same as ProjectionResults.tsx's own "Net income" metric — always populated (real
-  // figures, not a placeholder) regardless of withdrawal strategy, so the chart shows genuine data
-  // under a flat target too (e.g. any variability caused by shortfalls), not just under guardrails.
-  const incomeChartData = (result?.incomeByYearPercentiles ?? []).map((p, i) => ({
-    year: xAxisLabelForIndex(i, axisMode, scenario.household.people, startCalendarYear),
-    p10: penceToPounds(p.p10),
-    p15: penceToPounds(p.p15),
-    p25: penceToPounds(p.p25),
-    p50: penceToPounds(p.p50),
-    p75: penceToPounds(p.p75),
-    p85: penceToPounds(p.p85),
-    p90: penceToPounds(p.p90),
-    outerBand: penceToPounds(p.p90) - penceToPounds(p.p10),
-    innerBand: penceToPounds(p.p75) - penceToPounds(p.p25),
-    deterministic: deterministicIncomeByYear[i] ?? 0,
-  }));
-
-  const histogramData = result ? buildHistogram(result.finalOutcomes, result.runCount) : [];
-  const percentileHistogramData = result ? buildPercentileHistogram(result.finalOutcomes) : [];
-
-  // Only `sampleTrajectories.length` runs, spread evenly across the outcome distribution (not just
-  // "the first N simulated" — see StochasticBatchResult.sampledRunIndices's doc comment), have a
-  // full year-by-year trajectory to plot at all. A clicked bucket's matches are its own `runIndices`
-  // (indices into `finalOutcomes`) mapped to their *position* within the sampled subset, via this
-  // reverse lookup — `finalOutcomes` index and sample position are no longer the same number now
-  // that the sample isn't just a contiguous prefix. Filtering by index (not by re-checking each
-  // run's value against rangeLow/rangeHigh) matters when many runs are tied at the same value — e.g.
-  // a big cluster ending at exactly £0 can span several adjacent buckets' ranges, and a value check
-  // alone would double-count those runs into every bucket whose range happens to include that value.
-  const sampledPositionByRunIndex = new Map((result?.sampledRunIndices ?? []).map((runIndex, position) => [runIndex, position]));
   const selectedBucket = selectedBucketIndex !== null ? (percentileHistogramData[selectedBucketIndex] ?? null) : null;
   const matchingRunIndices = selectedBucket
     ? selectedBucket.runIndices.map((i) => sampledPositionByRunIndex.get(i)).filter((position): position is number => position !== undefined)
