@@ -2182,24 +2182,51 @@ function CatalogInstanceCard({
   const rentalProperties = properties.filter((p) => p.propertyType === "rental");
   const allowJointOwner = !PERSON_ONLY_CATALOG_TYPES.has(instance.type);
 
+  // Matches the "(You)"/"(Them)"/"(Joint)" convention `StochasticProjection.tsx`'s own `ownerSuffix`
+  // already uses — without it, an account picker in a two-person household shows several
+  // identically-worded "Pension (£50,000)" options with no way to tell whose is whose.
+  const accountOwnerSuffix = (owner: Owner): string => {
+    if (!hasSecondPerson) return "";
+    if (owner === "joint") return " — Joint";
+    return owner === PERSON_B_ID ? " — Them" : " — You";
+  };
+
   const fields = definition.fields
     .map((field) => {
       if (field.key === "pensionAccountId") {
-        return { ...field, options: pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${formatNumber(a.currentBalance)})` })) };
+        return {
+          ...field,
+          options: pensionAccounts.map((a) => ({ value: a.id, label: `Pension${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
+        };
       }
       if (field.key === "isaAccountId") {
-        return { ...field, options: isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${formatNumber(a.currentBalance)})` })) };
+        return {
+          ...field,
+          options: isaAccounts.map((a) => ({ value: a.id, label: `ISA${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
+        };
       }
       if (field.key === "giaAccountId") {
-        return { ...field, options: giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${formatNumber(a.currentBalance)})` })) };
+        return {
+          ...field,
+          options: giaAccounts.map((a) => ({ value: a.id, label: `GIA${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
+        };
       }
       if (field.key === "cashAccountId") {
-        return { ...field, options: cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${formatNumber(a.currentBalance)})` })) };
+        return {
+          ...field,
+          options: cashAccounts.map((a) => ({ value: a.id, label: `Cash${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
+        };
       }
       if (field.key === "propertyId") {
         // Mortgage payments can be linked to any property; rental income only to a rental one.
         const options = instance.type === "rentalIncome" ? rentalProperties : properties;
-        return { ...field, options: options.map((a) => ({ value: a.id, label: `${a.propertyType === "rental" ? "Rental" : "Main residence"} (£${formatNumber(a.currentBalance)})` })) };
+        return {
+          ...field,
+          options: options.map((a) => ({
+            value: a.id,
+            label: `${a.propertyType === "rental" ? "Rental" : "Main residence"}${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})`,
+          })),
+        };
       }
       if (field.key === "destinationAccountId") {
         // A one-off inflow's optional (or general cash income's
@@ -2212,11 +2239,11 @@ function CatalogInstanceCard({
         return {
           ...field,
           options: [
-            ...isaAccounts.map((a) => ({ value: a.id, label: `ISA (£${formatNumber(a.currentBalance)})` })),
-            ...giaAccounts.map((a) => ({ value: a.id, label: `GIA (£${formatNumber(a.currentBalance)})` })),
-            ...cashAccounts.map((a) => ({ value: a.id, label: `Cash (£${formatNumber(a.currentBalance)})` })),
+            ...isaAccounts.map((a) => ({ value: a.id, label: `ISA${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
+            ...giaAccounts.map((a) => ({ value: a.id, label: `GIA${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
+            ...cashAccounts.map((a) => ({ value: a.id, label: `Cash${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` })),
             ...(instance.type === "generalCashIncome"
-              ? pensionAccounts.map((a) => ({ value: a.id, label: `Pension (£${formatNumber(a.currentBalance)})` }))
+              ? pensionAccounts.map((a) => ({ value: a.id, label: `Pension${accountOwnerSuffix(a.owner)} (£${formatNumber(a.currentBalance)})` }))
               : []),
           ],
         };
