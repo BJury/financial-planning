@@ -50,6 +50,39 @@ describe("shareLink round trip", () => {
     }
   });
 
+  it("preserves an explicit assetAllocation.equityMarket unchanged when the scenario is already stamped at CURRENT_SCHEMA_VERSION", async () => {
+    // Regression test: Onboarding.tsx used to hardcode `schemaVersion: 1` on every freshly-built
+    // scenario regardless of its actual (current) shape, which meant a live in-app scenario with an
+    // explicit `equityMarket` choice got wrongly routed through the v1->v2->v3 migration chain (meant
+    // only for genuinely old, pre-equityMarket exports) on every share/reload/import, silently
+    // resetting "US equities" back to the "UK equities" default via a lossy split-then-tie-break.
+    // A scenario correctly stamped at CURRENT_SCHEMA_VERSION must skip migration entirely and survive
+    // a share-link round trip byte-for-byte.
+    const scenario: Scenario = {
+      ...makeScenario(),
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      accounts: [
+        {
+          id: "isa1",
+          kind: "isa",
+          owner: PERSON_ID,
+          isaType: "stocksAndShares",
+          currentBalance: poundsToPence(100000),
+          annualGrowthRate: 0.05,
+          assetAllocation: { equities: 0.8, equityMarket: "us", bonds: 0.1, cash: 0.1 },
+        },
+      ],
+    };
+
+    const param = await encodeScenarioForShareLink(scenario);
+    const result = await decodeShareParam(param);
+
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect(result.scenario).toEqual(scenario);
+    }
+  });
+
   it("builds a URL with the encoded payload in ?p= and the hash route preserved", async () => {
     // vitest's default (non-jsdom) environment has no `location` — this app
     // is a no-server SPA (SPEC.md §9.1), so a plain stub is enough to

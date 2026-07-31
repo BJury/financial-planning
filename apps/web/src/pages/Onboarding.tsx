@@ -1,6 +1,7 @@
 import {
   convertNominalToReal,
   convertRealToNominal,
+  CURRENT_SCHEMA_VERSION,
   DEFAULT_ASSET_ALLOCATION,
   DEFAULT_PROJECTION_YEARS,
   DEFAULT_SELECTED_CHART_LINES,
@@ -741,7 +742,7 @@ export function Onboarding() {
     }));
 
     return {
-      schemaVersion: 1,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       ...(planName.trim() ? { name: planName.trim() } : {}),
       household,
       accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities, ...propertyEntities],
