@@ -905,9 +905,6 @@ export function StochasticProjection() {
           onChange={(v) => v && setRunCount(v)}
           w={140}
         />
-        <Button onClick={runSimulation} loading={status === "running"}>
-          Run simulation
-        </Button>
       </Group>
       {runCountOverridden && (
         <Text size="xs" c="dimmed">
@@ -924,7 +921,13 @@ export function StochasticProjection() {
           </Text>
           <SegmentedControl
             value={withdrawalStrategy}
-            onChange={(v) => setWithdrawalStrategy(v === "guytonKlinger" ? "guytonKlinger" : "fixed")}
+            onChange={(v) => {
+              // Switching strategy makes the current result stale — it was simulated under the old
+              // withdrawal rule, so keeping it displayed would silently mislead rather than prompt a re-run.
+              setWithdrawalStrategy(v === "guytonKlinger" ? "guytonKlinger" : "fixed");
+              setResult(null);
+              setSelectedBucketIndex(null);
+            }}
             data={[
               { value: "fixed", label: "Fixed target income" },
               { value: "guytonKlinger", label: "Guyton-Klinger guardrails" },
@@ -944,7 +947,11 @@ export function StochasticProjection() {
                 description="% above baseline rate"
                 rightSection="%"
                 value={cutTriggerPct}
-                onChange={(v) => setCutTriggerPct(typeof v === "number" ? v : 20)}
+                onChange={(v) => {
+                  setCutTriggerPct(typeof v === "number" ? v : 20);
+                  setResult(null);
+                  setSelectedBucketIndex(null);
+                }}
                 w={150}
               />
               <NumberInput
@@ -952,7 +959,11 @@ export function StochasticProjection() {
                 description="size of the cut"
                 rightSection="%"
                 value={cutAmountPct}
-                onChange={(v) => setCutAmountPct(typeof v === "number" ? v : 10)}
+                onChange={(v) => {
+                  setCutAmountPct(typeof v === "number" ? v : 10);
+                  setResult(null);
+                  setSelectedBucketIndex(null);
+                }}
                 w={150}
               />
               <NumberInput
@@ -960,7 +971,11 @@ export function StochasticProjection() {
                 description="% below baseline rate"
                 rightSection="%"
                 value={raiseTriggerPct}
-                onChange={(v) => setRaiseTriggerPct(typeof v === "number" ? v : 20)}
+                onChange={(v) => {
+                  setRaiseTriggerPct(typeof v === "number" ? v : 20);
+                  setResult(null);
+                  setSelectedBucketIndex(null);
+                }}
                 w={150}
               />
               <NumberInput
@@ -968,13 +983,23 @@ export function StochasticProjection() {
                 description="size of the raise"
                 rightSection="%"
                 value={raiseAmountPct}
-                onChange={(v) => setRaiseAmountPct(typeof v === "number" ? v : 10)}
+                onChange={(v) => {
+                  setRaiseAmountPct(typeof v === "number" ? v : 10);
+                  setResult(null);
+                  setSelectedBucketIndex(null);
+                }}
                 w={150}
               />
             </Group>
           </>
         )}
       </Stack>
+
+      <div>
+        <Button onClick={runSimulation} loading={status === "running"}>
+          Run simulation
+        </Button>
+      </div>
 
       {status === "running" && (
         <Stack gap={4}>
