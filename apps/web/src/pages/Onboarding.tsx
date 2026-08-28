@@ -741,13 +741,35 @@ export function Onboarding() {
         : {}),
     }));
 
+    // A contribution's "Ends on", left blank, is *shown* as tracking the
+    // first drawdown target's start age live (`CatalogInstanceCard`'s
+    // `contributionDefaultEndDate` — the field's description/placeholder)
+    // — but unlike State Pension, none of the four contribution catalog
+    // types self-gate on retirement age at the engine level (their
+    // `isActive` is unconditionally `true`, deferring entirely to
+    // `endDate`), so that display default has to actually be resolved
+    // into a real date here or a contribution left blank runs for the
+    // whole projection instead of stopping when drawdown starts. Mirrors
+    // that card's own computation exactly, recomputed fresh on every
+    // build so it keeps tracking the target's start age if that's edited
+    // later — never written back into `incomeDrains` state itself, so a
+    // field genuinely left blank keeps displaying as blank (with the
+    // live-tracked default) rather than freezing at whatever it resolved
+    // to on a given render.
+    const firstDrawdownTargetStartAge = (drawdownTargets[0]?.config as TargetDrawdownIncomeConfig | undefined)?.startAge;
+    const resolvedIncomeDrains = incomeDrains.map((drain) => {
+      if (drain.endDate || !CONTRIBUTION_DRAIN_TYPES.includes(drain.type) || firstDrawdownTargetStartAge === undefined) return drain;
+      const ownerDob = drain.owner === "joint" ? undefined : (drain.owner === PERSON_B_ID ? personBDateOfBirth : dateOfBirth) || undefined;
+      return ownerDob ? { ...drain, endDate: isoDateFromAge(ownerDob, firstDrawdownTargetStartAge) } : drain;
+    });
+
     return {
       schemaVersion: CURRENT_SCHEMA_VERSION,
       ...(planName.trim() ? { name: planName.trim() } : {}),
       household,
       accounts: [...pensionAccountEntities, ...isaAccountEntities, ...giaAccountEntities, ...cashAccountEntities, ...propertyEntities],
       incomeSources: [...drawdownTargets, ...incomeSources],
-      incomeDrains,
+      incomeDrains: resolvedIncomeDrains,
       inflationRate,
       upratingPolicy: { kind: "inflationLinked" },
       projectionYears,
