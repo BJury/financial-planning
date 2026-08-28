@@ -1393,7 +1393,17 @@ export function runProjection(
           const accountIds = accountIdsByPerson.get(personId) ?? discoverAccountIds(personId);
           creditAccountsAfterDrawdown(accountIds, result);
           nextLumpSumAllowanceUsed.set(personId, addPence(nextLumpSumAllowanceUsed.get(personId) ?? zeroPence(), result.lumpSumAllowanceUsed));
-          applyDrawdownResultToAccumulator(personId, result);
+          // A joint target's shortfall is a household-level concept
+          // (SPEC.md §5.7.4), not either person's own attempt — the
+          // "optimised" strategy can have one person's own solve run out
+          // partway through a chunk it was assigned, then top the gap up
+          // entirely from the other person (`solveHouseholdDrawdown`'s
+          // "spills over" reallocation). That first person's own
+          // `result.shortfall` stays `true` from their individual attempt
+          // even once the household's combined total fully meets the
+          // target, so use the already-reallocated household verdict here
+          // instead of trusting each person's own (possibly stale) flag.
+          applyDrawdownResultToAccumulator(personId, { ...result, shortfall: householdResult.shortfall });
         }
         continue;
       }

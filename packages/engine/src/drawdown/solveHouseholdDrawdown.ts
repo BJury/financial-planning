@@ -137,18 +137,34 @@ function solveEvenOrCustom<TId>(
     capitalGainsRates,
     ...(preferenceB !== undefined ? { taxablePreferenceAmount: preferenceB } : {}),
   });
-  return combine([
-    { id: personA.id, result: resultA },
-    { id: personB.id, result: resultB },
-  ]);
+  return combine(
+    [
+      { id: personA.id, result: resultA },
+      { id: personB.id, result: resultB },
+    ],
+    target,
+  );
 }
 
-function combine<TId>(perPerson: readonly HouseholdDrawdownPersonResult<TId>[]): HouseholdDrawdownSolverResult<TId> {
+/**
+ * `targetNetAmount` is the household's own combined target, not either
+ * person's slice of it — deliberately *not* `perPerson.some(p =>
+ * p.result.shortfall)`. The "optimised" strategy below can pick one
+ * person to cover a chunk, have their own solve run out partway through,
+ * then top up the gap from the other person entirely (a "spills over"
+ * reallocation) — that first person's own `DrawdownSolverResult.shortfall`
+ * stays `true` from their individual attempt even once the household's
+ * combined total fully meets the target, so it's the wrong signal to
+ * surface as *the household's* shortfall (SPEC.md §5.7.4 — a joint
+ * target's shortfall is a household-level concept, not a per-attempt one).
+ */
+function combine<TId>(perPerson: readonly HouseholdDrawdownPersonResult<TId>[], targetNetAmount: Pence): HouseholdDrawdownSolverResult<TId> {
+  const totalNetAchieved = perPerson.reduce((total, p) => addPence(total, p.result.netAchieved), zeroPence());
   return {
     perPerson,
-    totalNetAchieved: perPerson.reduce((total, p) => addPence(total, p.result.netAchieved), zeroPence()),
+    totalNetAchieved,
     totalTaxCost: perPerson.reduce((total, p) => addPence(total, addPence(p.result.incomeTaxCost, p.result.capitalGainsTaxCost)), zeroPence()),
-    shortfall: perPerson.some((p) => p.result.shortfall),
+    shortfall: totalNetAchieved < targetNetAmount,
   };
 }
 
@@ -208,7 +224,7 @@ export function solveHouseholdDrawdown<TId>(
 
   if (!personB) {
     const result = solveDrawdown({ ...personA.state, targetNetAmount, capitalGainsRates, ...preferenceFor(targetNetAmount) });
-    return combine([{ id: personA.id, result }]);
+    return combine([{ id: personA.id, result }], targetNetAmount);
   }
 
   if (strategy.kind === "even") {
@@ -259,8 +275,11 @@ export function solveHouseholdDrawdown<TId>(
     }
   }
 
-  return combine([
-    { id: personA.id, result: resultA },
-    { id: personB.id, result: resultB },
-  ]);
+  return combine(
+    [
+      { id: personA.id, result: resultA },
+      { id: personB.id, result: resultB },
+    ],
+    targetNetAmount,
+  );
 }

@@ -178,6 +178,35 @@ describe("solveHouseholdDrawdown", () => {
       expect(b?.result.netAchieved).toBeGreaterThan(0); // picked up the remainder A couldn't cover
     });
 
+    it("reallocates fully even when the cheaper person's own solve runs short first — a stale per-attempt shortfall must not leak into the household result", () => {
+      // Person A is cheap (no other income, so wins the "who's cheaper for
+      // the remainder" comparison) but has a modest pot — enough to be
+      // asked to cover the remainder, not enough to actually cover it
+      // alone. Person B is pricier (already in the higher-rate band from
+      // other income) but has ample capacity, so B correctly tops up
+      // whatever A couldn't reach. Regression test: A's own solo attempt
+      // at its assigned chunk genuinely falls short internally, but B's
+      // top-up means the *household's* combined total still hits the full
+      // target — the household-level `shortfall` must reflect that, not
+      // A's stale, since-topped-up attempt (see `combine`'s doc comment).
+      const cheapButLimited: HouseholdDrawdownPerson<typeof PERSON_A>["state"] = {
+        ...generousPension(),
+        pensionBalance: poundsToPence(30000),
+      };
+      const target = poundsToPence(100000);
+      const result = solveHouseholdDrawdown(
+        target,
+        { kind: "optimised" },
+        [
+          { id: PERSON_A, state: cheapButLimited },
+          { id: PERSON_B, state: alreadyHigherRate() },
+        ],
+        cgtRates,
+      );
+      expect(result.totalNetAchieved).toBe(target);
+      expect(result.shortfall).toBe(false);
+    });
+
     it("reports a genuine shortfall once both people's combined capacity is exhausted", () => {
       const smallPot: HouseholdDrawdownPerson<typeof PERSON_A>["state"] = { ...generousPension(), pensionBalance: poundsToPence(1000) };
       const result = solveHouseholdDrawdown(
