@@ -34,7 +34,7 @@ import { useDisclosure } from "@mantine/hooks";
 import { useEffect, useMemo, useState } from "react";
 import { CatalogItemForm } from "../catalog-ui/CatalogItemForm.js";
 import { CatalogPicker } from "../catalog-ui/CatalogPicker.js";
-import { AgeOrDateInput, isoDateFromAge } from "../components/AgeOrDateInput.js";
+import { AgeOrDateInput, ageFromIsoDate, isoDateFromAge } from "../components/AgeOrDateInput.js";
 import { AboutDialog } from "../components/AboutDialog.js";
 import { ColorSchemeToggle } from "../components/ColorSchemeToggle.js";
 import { InfoTip } from "../components/InfoTip.js";
@@ -2366,10 +2366,15 @@ function CatalogInstanceCard({
           />
           <AgeOrDateInput
             label="Ends on"
-            description={contributionDefaultEndDate ? "Defaults to your retirement age" : "Leave blank for no end date"}
-            value={instance.endDate ?? contributionDefaultEndDate ?? ""}
+            description={
+              contributionDefaultEndDate
+                ? `Blank defaults to your retirement age — shown greyed out below (age ${ageFromIsoDate(ownerDob ?? "", contributionDefaultEndDate) ?? "?"})`
+                : "Leave blank for no end date"
+            }
+            value={instance.endDate ?? ""}
             dateOfBirth={ownerDob}
             defaultMode={contributionDefaultEndDate ? "age" : "date"}
+            {...(contributionDefaultEndDate ? { defaultIsoDate: contributionDefaultEndDate } : {})}
             onChange={setEndDate}
           />
         </Group>

@@ -39,6 +39,7 @@ export function AgeOrDateInput({
   dateOfBirth,
   defaultMode = "date",
   required,
+  defaultIsoDate,
   onChange,
 }: {
   readonly label: string;
@@ -48,6 +49,18 @@ export function AgeOrDateInput({
   /** Which toggle position this field starts in — e.g. State Pension's own "Starts on" defaults to "age" (pre-filled at 67) since that's how the field is naturally thought about, unlike most other date-tied fields, which default to a plain date. */
   readonly defaultMode?: "date" | "age";
   readonly required?: boolean;
+  /**
+   * What this field actually resolves to when left blank (e.g. a
+   * contribution's "Ends on" falling back to the drawdown target's start
+   * age) — shown only as ghost placeholder text, never written into
+   * `value` itself. Keeping it out of `value` matters: a resolved default
+   * used to be indistinguishable from a real, explicitly-set one (same
+   * solid text, same colour), which is why clearing the field back to
+   * blank looked like nothing had changed. A placeholder reads as
+   * unset-but-implied instead, the same way every other empty input on
+   * this page already looks.
+   */
+  readonly defaultIsoDate?: string;
   readonly onChange: (isoDate: string) => void;
 }) {
   const [mode, setMode] = useState<"date" | "age">(defaultMode);
@@ -72,12 +85,14 @@ export function AgeOrDateInput({
 
   if (mode === "age" && canUseAge && dateOfBirth) {
     const ageValue = value ? ageFromIsoDate(dateOfBirth, value) : undefined;
+    const placeholderAge = ageValue === undefined && defaultIsoDate ? ageFromIsoDate(dateOfBirth, defaultIsoDate) : undefined;
     return (
       <NumberInput
         label={labelNode}
         description={description}
         {...(required !== undefined ? { required } : {})}
         {...(ageValue !== undefined ? { value: ageValue } : {})}
+        {...(placeholderAge !== undefined ? { placeholder: String(placeholderAge) } : {})}
         onChange={(v) => onChange(typeof v === "number" ? isoDateFromAge(dateOfBirth, v) : "")}
       />
     );
@@ -90,6 +105,7 @@ export function AgeOrDateInput({
       description={description}
       {...(required !== undefined ? { required } : {})}
       value={value}
+      {...(!value && defaultIsoDate ? { placeholder: defaultIsoDate } : {})}
       onChange={(e) => onChange(e.currentTarget.value)}
     />
   );
