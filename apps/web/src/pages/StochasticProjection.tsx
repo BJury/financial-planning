@@ -550,13 +550,16 @@ function AssetAllocationInput({ allocation, onChange }: { readonly allocation: A
             if (key !== "custom") onChange({ ...RISK_PROFILE_PRESETS[key], equityMarket: allocation.equityMarket });
           }}
         />
-        <Select
-          label="Equity type"
-          data={EQUITY_MARKET_OPTIONS}
-          value={allocation.equityMarket}
-          allowDeselect={false}
-          onChange={(v) => v && onChange({ ...allocation, equityMarket: v as AssetAllocation["equityMarket"] })}
-        />
+        {/* Meaningless at 0% equities (the "Cash / near-cash" preset, or a Custom split with Equities% zeroed out) — a market choice has nothing to apply to when none of the balance is actually in equities. */}
+        {allocation.equities > 0 && (
+          <Select
+            label="Equity type"
+            data={EQUITY_MARKET_OPTIONS}
+            value={allocation.equityMarket}
+            allowDeselect={false}
+            onChange={(v) => v && onChange({ ...allocation, equityMarket: v as AssetAllocation["equityMarket"] })}
+          />
+        )}
       </Group>
       {mode === "custom" && (
         <Group grow>
